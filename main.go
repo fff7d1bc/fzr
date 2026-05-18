@@ -21,6 +21,7 @@ type config struct {
 	evalShell     string
 	showHelp      bool
 	followLinks   bool
+	matchStyle    matchStyle
 }
 
 type stringListFlag []string
@@ -82,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if cfg.interactive {
-		return runInteractive(context.Background(), opts, cfg.sortMode, cfg.caseSensitive, os.Stdin, stdout, stderr)
+		return runInteractive(context.Background(), opts, cfg.sortMode, cfg.caseSensitive, cfg.matchStyle, os.Stdin, stdout, stderr)
 	}
 
 	entries, err := collectEntries(context.Background(), opts)
@@ -98,7 +99,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 func parseArgs(args []string, stderr io.Writer) (config, error) {
 	cfg := config{
-		sortMode: SortPath,
+		sortMode:   SortPath,
+		matchStyle: mustParseMatchStyle(defaultMatchStyle),
 	}
 	fs := flag.NewFlagSet("fzr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -122,11 +124,18 @@ func parseArgs(args []string, stderr io.Writer) (config, error) {
 	fs.Var(&cfg.ignoredNames, "I", "ignore directory basename")
 	fs.Var(&cfg.ignoredNames, "ignore", "ignore directory basename")
 	fs.BoolVar(&cfg.followLinks, "follow-symlinks", false, "follow symlinked directories and files")
+	styleValue := defaultMatchStyle
+	fs.StringVar(&styleValue, "style", styleValue, "match style: green,bold,underline")
 	fs.StringVar(&cfg.evalShell, "eval", "", "print shell integration script: zsh")
 
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
+	style, err := parseMatchStyle(styleValue)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.matchStyle = style
 	if cfg.evalShell != "" {
 		if fs.NArg() > 0 {
 			return cfg, fmt.Errorf("--eval does not accept a root argument")
@@ -189,6 +198,8 @@ Options:
                          %s
   -I, --ignore NAME      ignore directory basename
       --follow-symlinks  follow symlinked directories and files
+      --style STYLE      match style: green,bold,underline
+                         tokens: green, yellow, bold, underline, plain
       --eval SHELL       print shell integration script: zsh
   -h, --help             print usage
 `, strings.Join(CommonIgnoredDirNames, ", "))

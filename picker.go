@@ -364,7 +364,7 @@ func (m *pickerModel) keepSelectionVisible() {
 	}
 }
 
-func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, caseSensitive bool, stdin *os.File, stdout, stderr io.Writer) error {
+func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, caseSensitive bool, matchStyle matchStyle, stdin *os.File, stdout, stderr io.Writer) error {
 	inFD := int(stdin.Fd())
 	if !term.IsTerminal(inFD) {
 		return fmt.Errorf("interactive mode requires a terminal on stdin")
@@ -383,7 +383,7 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	scanCh := scanEntries(ctx, opts)
 	keyCh := readKeys(stdin)
 	width := terminalWidth(inFD)
-	theme := pickerThemeForStderr(os.Stderr)
+	theme := pickerThemeForStderr(os.Stderr, matchStyle)
 
 	preparePicker(stderr)
 	fmt.Fprint(stderr, "\x1b[?25l")

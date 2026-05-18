@@ -53,6 +53,62 @@ func TestShouldUsePickerColorUsesStderrTTY(t *testing.T) {
 	}
 }
 
+func TestParseMatchStyle(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantStart string
+		wantReset string
+	}{
+		{
+			name:      "default green bold underline",
+			value:     "green,bold,underline",
+			wantStart: "\x1b[32m\x1b[1m\x1b[4m",
+			wantReset: "\x1b[39m\x1b[22m\x1b[24m",
+		},
+		{
+			name:      "yellow bold underline",
+			value:     "yellow,bold,underline",
+			wantStart: "\x1b[33m\x1b[1m\x1b[4m",
+			wantReset: "\x1b[39m\x1b[22m\x1b[24m",
+		},
+		{
+			name:      "plain",
+			value:     "plain",
+			wantStart: "",
+			wantReset: "",
+		},
+		{
+			name:      "green underline",
+			value:     "green,underline",
+			wantStart: "\x1b[32m\x1b[4m",
+			wantReset: "\x1b[39m\x1b[24m",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			style, err := parseMatchStyle(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotStart, gotReset := matchStyleANSI(style)
+			if gotStart != tt.wantStart || gotReset != tt.wantReset {
+				t.Fatalf("ANSI = %q/%q, want %q/%q", gotStart, gotReset, tt.wantStart, tt.wantReset)
+			}
+		})
+	}
+}
+
+func TestParseMatchStyleRejectsInvalidStyles(t *testing.T) {
+	for _, value := range []string{"", "green,,bold", "green,yellow", "plain,bold", "blue"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parseMatchStyle(value); err == nil {
+				t.Fatal("expected invalid style to fail")
+			}
+		})
+	}
+}
+
 func testEnv(values map[string]string) func(string) string {
 	return func(key string) string {
 		return values[key]

@@ -1366,11 +1366,11 @@ func TestRenderPickerHighlightsOnlyEntryText(t *testing.T) {
 	}
 }
 
-func TestStyledDisplayPathHighlightsMatchedCharactersYellowBoldUnderlined(t *testing.T) {
+func TestStyledDisplayPathHighlightsMatchedCharactersGreenBoldUnderlined(t *testing.T) {
 	entry := Entry{Path: "src/FooBar.go", Type: TypeFile}
 
 	got := styledDisplayPath(entry, []string{"sfb"}, 80, pickerThemeForColor(true), false)
-	want := "\x1b[33m\x1b[1m\x1b[4ms\x1b[24m\x1b[22m\x1b[39m\x1b[2mrc/\x1b[22m\x1b[33m\x1b[1m\x1b[4mF\x1b[24m\x1b[22m\x1b[39moo\x1b[33m\x1b[1m\x1b[4mB\x1b[24m\x1b[22m\x1b[39mar.go"
+	want := "\x1b[32m\x1b[1m\x1b[4ms\x1b[39m\x1b[22m\x1b[24m\x1b[2mrc/\x1b[22m\x1b[32m\x1b[1m\x1b[4mF\x1b[39m\x1b[22m\x1b[24moo\x1b[32m\x1b[1m\x1b[4mB\x1b[39m\x1b[22m\x1b[24mar.go"
 	if got != want {
 		t.Fatalf("styled path = %q, want %q", got, want)
 	}
@@ -1411,9 +1411,9 @@ func TestStyledDisplayPathHighlightsQueryTokenMatches(t *testing.T) {
 
 	got := styledDisplayPath(entry, []string{".mkv", "fb"}, 80, pickerThemeForColor(true), false)
 	for _, want := range []string{
-		"\x1b[33m\x1b[1m\x1b[4mF\x1b[24m\x1b[22m\x1b[39m",
-		"\x1b[33m\x1b[1m\x1b[4mB\x1b[24m\x1b[22m\x1b[39m",
-		"\x1b[33m\x1b[1m\x1b[4m.mkv\x1b[24m\x1b[22m\x1b[39m",
+		"\x1b[32m\x1b[1m\x1b[4mF\x1b[39m\x1b[22m\x1b[24m",
+		"\x1b[32m\x1b[1m\x1b[4mB\x1b[39m\x1b[22m\x1b[24m",
+		"\x1b[32m\x1b[1m\x1b[4m.mkv\x1b[39m\x1b[22m\x1b[24m",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("styled path %q missing highlight %q", got, want)
@@ -1425,7 +1425,7 @@ func TestStyledDisplayPathHighlightsContiguousSubstringMatch(t *testing.T) {
 	entry := Entry{Path: "Waaa/i/t/c/h/Witch.mkv", Type: TypeFile}
 
 	got := styledDisplayPath(entry, []string{"Witch"}, 80, pickerThemeForColor(true), false)
-	if !strings.Contains(got, "\x1b[2mWaaa/i/t/c/h/\x1b[22m\x1b[33m\x1b[1m\x1b[4mWitch\x1b[24m\x1b[22m\x1b[39m.mkv") {
+	if !strings.Contains(got, "\x1b[2mWaaa/i/t/c/h/\x1b[22m\x1b[32m\x1b[1m\x1b[4mWitch\x1b[39m\x1b[22m\x1b[24m.mkv") {
 		t.Fatalf("styled path did not highlight contiguous substring: %q", got)
 	}
 }
@@ -1457,8 +1457,8 @@ func TestRenderPickerCombinesSelectionAndUnderlinedMatches(t *testing.T) {
 	renderPicker(&out, model, 20, pickerThemeForColor(true))
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "\x1b[7m\x1b[33m\x1b[1m\x1b[4ma\x1b[24m\x1b[22m\x1b[39mlpha\x1b[0m\x1b[1E") {
-		t.Fatalf("selected yellow underline highlight not found in render output: %q", rendered)
+	if !strings.Contains(rendered, "\x1b[7m\x1b[32m\x1b[1m\x1b[4ma\x1b[39m\x1b[22m\x1b[24mlpha\x1b[0m\x1b[1E") {
+		t.Fatalf("selected green underline highlight not found in render output: %q", rendered)
 	}
 }
 
@@ -1669,7 +1669,7 @@ func TestStyledDisplayPathHighlightsOnlyVisibleTrimmedCharacters(t *testing.T) {
 	if strings.Contains(got, "\x1b[4m.") {
 		t.Fatalf("trimmed ellipsis was highlighted: %q", got)
 	}
-	if !strings.Contains(got, "\x1b[33m\x1b[1m\x1b[4mf\x1b[24m\x1b[22m\x1b[39m") {
+	if !strings.Contains(got, "\x1b[32m\x1b[1m\x1b[4mf\x1b[39m\x1b[22m\x1b[24m") {
 		t.Fatalf("visible matched suffix was not highlighted: %q", got)
 	}
 }

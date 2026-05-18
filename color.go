@@ -1,10 +1,20 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 )
+
+const defaultMatchStyle = "green,bold,underline"
+
+type matchStyle struct {
+	color     string
+	bold      bool
+	underline bool
+	plain     bool
+}
 
 type pickerTheme struct {
 	matchStart  string
@@ -16,11 +26,15 @@ type pickerTheme struct {
 	reset       string
 }
 
-func pickerThemeForStderr(stderr *os.File) pickerTheme {
-	return pickerThemeForColor(shouldUsePickerColor(stderr, os.Getenv))
+func pickerThemeForStderr(stderr *os.File, style matchStyle) pickerTheme {
+	return pickerThemeForColorAndStyle(shouldUsePickerColor(stderr, os.Getenv), style)
 }
 
 func pickerThemeForColor(color bool) pickerTheme {
+	return pickerThemeForColorAndStyle(color, mustParseMatchStyle(defaultMatchStyle))
+}
+
+func pickerThemeForColorAndStyle(color bool, style matchStyle) pickerTheme {
 	theme := pickerTheme{
 		selectStart: "\x1b[7m",
 		selectReset: "\x1b[0m",
@@ -29,15 +43,81 @@ func pickerThemeForColor(color bool) pickerTheme {
 	if !color {
 		return theme
 	}
+	matchStart, matchReset := matchStyleANSI(style)
 	return pickerTheme{
-		matchStart:  "\x1b[33m\x1b[1m\x1b[4m",
-		matchReset:  "\x1b[24m\x1b[22m\x1b[39m",
+		matchStart:  matchStart,
+		matchReset:  matchReset,
 		dimStart:    "\x1b[2m",
 		dimReset:    "\x1b[22m",
 		selectStart: "\x1b[7m",
 		selectReset: "\x1b[0m",
 		reset:       "\x1b[0m",
 	}
+}
+
+func parseMatchStyle(value string) (matchStyle, error) {
+	if value == "" {
+		return matchStyle{}, fmt.Errorf("style cannot be empty")
+	}
+	var style matchStyle
+	tokens := strings.Split(value, ",")
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			return matchStyle{}, fmt.Errorf("style contains an empty token")
+		}
+		switch token {
+		case "plain":
+			style.plain = true
+		case "green", "yellow":
+			if style.color != "" && style.color != token {
+				return matchStyle{}, fmt.Errorf("style cannot use both %s and %s", style.color, token)
+			}
+			style.color = token
+		case "bold":
+			style.bold = true
+		case "underline":
+			style.underline = true
+		default:
+			return matchStyle{}, fmt.Errorf("unknown style token %q", token)
+		}
+	}
+	if style.plain && (len(tokens) > 1 || style.color != "" || style.bold || style.underline) {
+		return matchStyle{}, fmt.Errorf("style plain cannot be combined with other tokens")
+	}
+	return style, nil
+}
+
+func mustParseMatchStyle(value string) matchStyle {
+	style, err := parseMatchStyle(value)
+	if err != nil {
+		panic(err)
+	}
+	return style
+}
+
+func matchStyleANSI(style matchStyle) (string, string) {
+	if style.plain {
+		return "", ""
+	}
+	var start, reset strings.Builder
+	switch style.color {
+	case "green":
+		start.WriteString("\x1b[32m")
+		reset.WriteString("\x1b[39m")
+	case "yellow":
+		start.WriteString("\x1b[33m")
+		reset.WriteString("\x1b[39m")
+	}
+	if style.bold {
+		start.WriteString("\x1b[1m")
+		reset.WriteString("\x1b[22m")
+	}
+	if style.underline {
+		start.WriteString("\x1b[4m")
+		reset.WriteString("\x1b[24m")
+	}
+	return start.String(), reset.String()
 }
 
 func shouldUsePickerColor(stderr *os.File, getenv func(string) string) bool {

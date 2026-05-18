@@ -22,6 +22,9 @@ func TestParseArgsCaseSensitive(t *testing.T) {
 	if cfg.root != "/tmp" {
 		t.Fatalf("root = %q, want /tmp", cfg.root)
 	}
+	if cfg.matchStyle.color != "green" || !cfg.matchStyle.bold || !cfg.matchStyle.underline {
+		t.Fatalf("matchStyle = %#v, want default green bold underline", cfg.matchStyle)
+	}
 }
 
 func TestParseArgsShortFlags(t *testing.T) {
@@ -64,6 +67,39 @@ func TestParseArgsLongIgnoreFlags(t *testing.T) {
 	}
 	if !reflect.DeepEqual([]string(cfg.ignoredNames), []string{"target", "dist"}) {
 		t.Fatalf("ignoredNames = %#v, want target and dist", []string(cfg.ignoredNames))
+	}
+}
+
+func TestParseArgsStyle(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseArgs([]string{"--style", "yellow,bold,underline", "-i", "/tmp"}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.matchStyle.color != "yellow" || !cfg.matchStyle.bold || !cfg.matchStyle.underline {
+		t.Fatalf("matchStyle = %#v, want yellow bold underline", cfg.matchStyle)
+	}
+}
+
+func TestParseArgsPlainStyle(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseArgs([]string{"--style", "plain", "-i", "/tmp"}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.matchStyle.plain {
+		t.Fatalf("matchStyle = %#v, want plain", cfg.matchStyle)
+	}
+}
+
+func TestParseArgsRejectsInvalidStyle(t *testing.T) {
+	for _, value := range []string{"green,,bold", "green,yellow", "plain,bold", "blue"} {
+		t.Run(value, func(t *testing.T) {
+			var stderr bytes.Buffer
+			if _, err := parseArgs([]string{"--style", value, "-i", "/tmp"}, &stderr); err == nil {
+				t.Fatal("expected invalid style to fail")
+			}
+		})
 	}
 }
 

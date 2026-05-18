@@ -60,6 +60,8 @@ fzr --ignore target --ignore dist .
 fzr -i .
 fzr -i -f ~/src
 fzr -i -c .
+fzr -i --style yellow,bold,underline .
+fzr -i --style plain .
 ```
 
 Options
@@ -73,6 +75,7 @@ Options
   `.venv`, `__pycache__`, `.tox`, and `.cache`.
 - `-I`, `--ignore NAME` skips directories with this basename. Can be repeated.
 - `--follow-symlinks` follows symlinked directories and files.
+- `--style STYLE` sets the interactive match highlight style.
 - `--eval SHELL` prints a shell integration script. Currently supports `zsh`.
 - `-h`, `--help` prints help.
 
@@ -104,6 +107,11 @@ Keys
 
 Directories are shown with a trailing `/`. Matching uses the real candidate
 path, not display-only markers.
+
+Matched characters are green, bold, and underlined by default. Use
+`--style yellow,bold,underline` to switch to yellow, or `--style plain` to
+disable match styling. Style tokens are comma-separated and support `green`,
+`yellow`, `bold`, `underline`, and `plain`.
 
 ## Matching
 
