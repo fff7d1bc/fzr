@@ -1,0 +1,344 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const scanBatchSize = 512
+
+type EntryType int
+
+const (
+	TypeFile EntryType = iota + 1
+	TypeDir
+)
+
+type Entry struct {
+	Path      string
+	ModTimeNS int64
+	Type      EntryType
+}
+
+type TypeFilter int
+
+const (
+	FilterAll TypeFilter = iota
+	FilterFiles
+	FilterDirs
+)
+
+type SortMode string
+
+const (
+	SortPath  SortMode = "path"
+	SortMTime SortMode = "mtime"
+)
+
+type ScanOptions struct {
+	Root        string
+	TypeFilter  TypeFilter
+	Ignored     []string
+	NeedModTime bool
+	FollowLinks bool
+}
+
+type ScanResult struct {
+	Entries []Entry
+	Err     error
+}
+
+func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
+	out := make(chan ScanResult, 16)
+	go func() {
+		defer close(out)
+		root := opts.Root
+		if root == "" {
+			root = "."
+		}
+		cleanRoot := filepath.Clean(root)
+		rootPrefix := cleanRoot + string(filepath.Separator)
+		ignored := ignoredDirSet(opts.Ignored)
+		batch := make([]Entry, 0, scanBatchSize)
+		flush := func() error {
+			if len(batch) == 0 {
+				return nil
+			}
+			entries := make([]Entry, len(batch))
+			copy(entries, batch)
+			batch = batch[:0]
+			return sendScanResult(ctx, out, ScanResult{Entries: entries})
+		}
+
+		addEntry := func(path string, dirent fs.DirEntry, entryType EntryType) error {
+			if !typeAllowed(entryType, opts.TypeFilter) {
+				return nil
+			}
+			rel, err := relativeScanPathUnderRoot(root, rootPrefix, path)
+			if err != nil {
+				if err := flush(); err != nil {
+					return err
+				}
+				return sendScanResult(ctx, out, ScanResult{Err: err})
+			}
+			entry := Entry{
+				Path: rel,
+				Type: entryType,
+			}
+			if opts.NeedModTime {
+				info, err := scanEntryInfo(path, dirent, opts.FollowLinks)
+				if err != nil {
+					if skippableScanError(err) {
+						return nil
+					}
+					if err := flush(); err != nil {
+						return err
+					}
+					return sendScanResult(ctx, out, ScanResult{Err: err})
+				}
+				entry.ModTimeNS = modTimeNS(info.ModTime())
+			}
+			batch = append(batch, entry)
+			if len(batch) >= scanBatchSize {
+				return flush()
+			}
+			return nil
+		}
+
+		var err error
+		if opts.FollowLinks {
+			err = walkDirFollowLinks(ctx, root, ignored, addEntry)
+		} else {
+			err = filepath.WalkDir(root, func(path string, dirent fs.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					if skippableScanError(walkErr) {
+						return nil
+					}
+					if err := flush(); err != nil {
+						return err
+					}
+					return sendScanResult(ctx, out, ScanResult{Err: walkErr})
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+
+				if path == root {
+					return nil
+				}
+
+				if dirent.IsDir() && ignoredDir(ignored, dirent.Name()) {
+					return filepath.SkipDir
+				}
+
+				entryType := TypeFile
+				if dirent.IsDir() {
+					entryType = TypeDir
+				}
+				return addEntry(path, dirent, entryType)
+			})
+		}
+		if err == nil {
+			err = flush()
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
+			_ = sendScanResult(ctx, out, ScanResult{Err: err})
+		}
+	}()
+	return out
+}
+
+func skippableScanError(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)
+}
+
+func ignoredDir(ignored map[string]struct{}, name string) bool {
+	_, ok := ignored[name]
+	return ok
+}
+
+func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
+	ancestors := make(map[string]struct{})
+	rootRealPath, err := filepath.EvalSymlinks(root)
+	if err != nil && !skippableScanError(err) {
+		return err
+	}
+	if rootRealPath != "" {
+		ancestors[rootRealPath] = struct{}{}
+	}
+	var walk func(string, map[string]struct{}) error
+	walk = func(dir string, ancestors map[string]struct{}) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if skippableScanError(err) {
+				return nil
+			}
+			return err
+		}
+		for _, dirent := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			path := filepath.Join(dir, dirent.Name())
+			entryType, traverse, err := followedEntryType(path, dirent)
+			if err != nil {
+				if skippableScanError(err) {
+					continue
+				}
+				return err
+			}
+			if traverse && ignoredDir(ignored, dirent.Name()) {
+				continue
+			}
+			if err := addEntry(path, dirent, entryType); err != nil {
+				return err
+			}
+			if traverse {
+				nextAncestors, cycle, err := descendSymlinkAware(ancestors, path)
+				if err != nil {
+					if skippableScanError(err) {
+						continue
+					}
+					return err
+				}
+				if cycle {
+					continue
+				}
+				if err := walk(path, nextAncestors); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(root, ancestors)
+}
+
+func followedEntryType(path string, dirent fs.DirEntry) (EntryType, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false, err
+	}
+	if info.IsDir() {
+		return TypeDir, true, nil
+	}
+	return TypeFile, false, nil
+}
+
+func scanEntryInfo(path string, dirent fs.DirEntry, followLinks bool) (fs.FileInfo, error) {
+	if followLinks {
+		return os.Stat(path)
+	}
+	return dirent.Info()
+}
+
+func descendSymlinkAware(ancestors map[string]struct{}, path string) (map[string]struct{}, bool, error) {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, ok := ancestors[realPath]; ok {
+		return ancestors, true, nil
+	}
+	next := make(map[string]struct{}, len(ancestors)+1)
+	for ancestor := range ancestors {
+		next[ancestor] = struct{}{}
+	}
+	next[realPath] = struct{}{}
+	return next, false, nil
+}
+
+func collectEntries(ctx context.Context, opts ScanOptions) ([]Entry, error) {
+	var entries []Entry
+	for result := range scanEntries(ctx, opts) {
+		if result.Err != nil {
+			return entries, result.Err
+		}
+		entries = append(entries, result.Entries...)
+	}
+	return entries, nil
+}
+
+func sendScanResult(ctx context.Context, out chan<- ScanResult, result ScanResult) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case out <- result:
+		return nil
+	}
+}
+
+func relativeScanPath(root, path string) (string, error) {
+	rel, ok := relativeScanPathFast(root, path)
+	if !ok {
+		var err error
+		rel, err = filepath.Rel(root, path)
+		if err != nil {
+			return "", err
+		}
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func relativeScanPathUnderRoot(root, rootPrefix, path string) (string, error) {
+	if strings.HasPrefix(path, rootPrefix) {
+		return filepath.ToSlash(path[len(rootPrefix):]), nil
+	}
+	return relativeScanPath(root, path)
+}
+
+func relativeScanPathFast(root, path string) (string, bool) {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+	if cleanPath == cleanRoot {
+		return "", true
+	}
+	prefix := cleanRoot + string(filepath.Separator)
+	if strings.HasPrefix(cleanPath, prefix) {
+		return cleanPath[len(prefix):], true
+	}
+	return "", false
+}
+
+func typeAllowed(entryType EntryType, filter TypeFilter) bool {
+	switch filter {
+	case FilterFiles:
+		return entryType == TypeFile
+	case FilterDirs:
+		return entryType == TypeDir
+	default:
+		return true
+	}
+}
+
+func sortEntries(entries []Entry, mode SortMode) {
+	switch mode {
+	case SortMTime:
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].ModTimeNS == entries[j].ModTimeNS {
+				return entries[i].Path < entries[j].Path
+			}
+			return entries[i].ModTimeNS < entries[j].ModTimeNS
+		})
+	default:
+		sort.SliceStable(entries, func(i, j int) bool {
+			return entries[i].Path < entries[j].Path
+		})
+	}
+}
+
+func modTimeNS(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
+}
