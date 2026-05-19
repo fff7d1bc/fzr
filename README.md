@@ -216,6 +216,11 @@ a slow per-character refresh. When you add text to the end of the query and no
 new scan results arrived, `fzr` narrows the existing match list instead of
 starting from every known path again.
 
+That means a query can get cheaper as it becomes more specific. If a first
+fragment leaves a small matched list, the next appended fragment filters that
+list. Backspacing or editing earlier text falls back to a broader search because
+previously rejected paths may become valid again.
+
 The delay depends on the number of candidates being filtered.
 
 - 1,000 or fewer candidates filter immediately.
@@ -225,9 +230,22 @@ The delay depends on the number of candidates being filtered.
 When narrowing an existing result list, the delay is based on the size of that
 current list rather than the total number of discovered paths.
 
-For strong multi-token searches, the picker shows a smaller set of top matches.
-This keeps weak tail matches out of selection and out of Ctrl-Space recent
-sorting.
+The status line uses `total` for discovered paths so far and `matched` for all
+ranked matches for the current query. When it says `showing top N`, the picker
+has a larger matched set but exposes only the active top-ranked subset for
+selection and current-result actions.
+
+Multi-token searches can use a soft cutoff. If the top matches look strong, the
+picker can expose the top 50. If matches look mixed or weaker, it can expose up
+to 200. Single-token searches and small result sets can show all matches. This
+keeps weak tail matches out of selection and out of Ctrl-Space recent sorting
+without discarding the full ranked match list internally.
+
+Ctrl-Space sorts the current active match set newest first. It does not
+necessarily stat the whole discovered tree, and it does not stat directories.
+Mtime values are cached during the picker session. The stat call reads metadata,
+not file contents, so it can be fast after traversal has warmed filesystem
+caches.
 
 ## Ignoring Directories
 
