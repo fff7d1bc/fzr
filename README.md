@@ -99,6 +99,8 @@ Keys
 - Type printable characters to edit the query.
 - Backspace deletes before the cursor.
 - Left and right arrows move inside the query.
+- Home and End move to the start and end of the query.
+- Ctrl-U clears the query.
 - Up and down arrows move the selection.
 - Ctrl-N and Ctrl-P also move the selection.
 - Ctrl-Space sorts current matches by modification time, newest first.

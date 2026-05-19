@@ -247,6 +247,46 @@ func TestPickerModelMoveQueryCursorClamps(t *testing.T) {
 	}
 }
 
+func TestPickerModelMovesQueryCursorHomeAndEnd(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.query = []rune("foo")
+	model.queryCursor = 1
+
+	model.moveQueryCursorEnd()
+	if got := model.queryCursor; got != len(model.query) {
+		t.Fatalf("end query cursor = %d, want %d", got, len(model.query))
+	}
+
+	model.moveQueryCursorHome()
+	if got := model.queryCursor; got != 0 {
+		t.Fatalf("home query cursor = %d, want 0", got)
+	}
+}
+
+func TestPickerModelClearQueryClearsWholeLine(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.addEntry(Entry{Path: "alpha"})
+	model.addEntry(Entry{Path: "beta"})
+	model.query = []rune("alp")
+	model.queryCursor = 2
+	model.applyQuery()
+
+	model.clearQuery()
+
+	if got := string(model.query); got != "" {
+		t.Fatalf("query = %q, want empty", got)
+	}
+	if model.queryCursor != 0 {
+		t.Fatalf("query cursor = %d, want 0", model.queryCursor)
+	}
+	if !model.queryDirty {
+		t.Fatal("queryDirty = false, want true")
+	}
+	if model.selected != 0 || model.offset != 0 {
+		t.Fatalf("selected/offset = %d/%d, want 0/0", model.selected, model.offset)
+	}
+}
+
 func TestPickerModelMiddleEditDisablesNarrowing(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.entries = make([]Entry, queryDebounceLargeThreshold+1)
@@ -544,6 +584,37 @@ func TestPickEntrySortRecentAppliesPendingQuery(t *testing.T) {
 	}
 	if _, ok := model.mtimeCache["beta-new.jpg"]; ok {
 		t.Fatal("unmatched beta path was statted unexpectedly")
+	}
+}
+
+func TestPickEntryClearQueryAppliesEmptyQuery(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.addEntries([]Entry{
+		{Path: "alpha", Type: TypeFile},
+		{Path: "beta", Type: TypeFile},
+	})
+	model.query = []rune("alp")
+	model.queryCursor = len(model.query)
+	model.applyQuery()
+
+	keyCh := make(chan keyEvent, 2)
+	keyCh <- keyEvent{kind: keyClearQuery}
+	keyCh <- keyEvent{kind: keyEnter}
+
+	var stderr bytes.Buffer
+	entry, err := pickEntry(context.Background(), model, nil, keyCh, &stderr, 80, pickerThemeForColor(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.Path != "alpha" {
+		t.Fatalf("selected path = %q, want first full-list entry alpha", entry.Path)
+	}
+	if string(model.query) != "" || model.appliedQuery != "" {
+		t.Fatalf("query/appliedQuery = %q/%q, want empty", string(model.query), model.appliedQuery)
+	}
+	if got := matchPaths(model.matches); !equalStrings(got, []string{"alpha", "beta"}) {
+		t.Fatalf("matches = %#v, want full list", got)
 	}
 }
 
@@ -1162,6 +1233,12 @@ func TestReadKeysMapsLeftRightAndUnknownCSI(t *testing.T) {
 	}{
 		{name: "right", input: "\x1b[C", want: keyRight},
 		{name: "left", input: "\x1b[D", want: keyLeft},
+		{name: "home", input: "\x1b[H", want: keyHome},
+		{name: "end", input: "\x1b[F", want: keyEnd},
+		{name: "home tilde 1", input: "\x1b[1~", want: keyHome},
+		{name: "end tilde 4", input: "\x1b[4~", want: keyEnd},
+		{name: "home tilde 7", input: "\x1b[7~", want: keyHome},
+		{name: "end tilde 8", input: "\x1b[8~", want: keyEnd},
 		{name: "unknown", input: "\x1b[Z", want: keyNoop},
 	}
 	for _, tt := range tests {
@@ -1191,6 +1268,8 @@ func TestReadKeysMapsSS3Arrows(t *testing.T) {
 		{name: "down", input: "\x1bOB", want: keyDown},
 		{name: "right", input: "\x1bOC", want: keyRight},
 		{name: "left", input: "\x1bOD", want: keyLeft},
+		{name: "home", input: "\x1bOH", want: keyHome},
+		{name: "end", input: "\x1bOF", want: keyEnd},
 		{name: "unknown", input: "\x1bOZ", want: keyNoop},
 	}
 	for _, tt := range tests {
@@ -1291,6 +1370,20 @@ func TestReadKeysMapsCtrlSpaceToSortRecent(t *testing.T) {
 	}
 	if key.kind != keySortRecent {
 		t.Fatalf("key kind = %v, want %v", key.kind, keySortRecent)
+	}
+}
+
+func TestReadKeysMapsCtrlUToClearQuery(t *testing.T) {
+	file := writeTempInputFile(t, string([]byte{21}))
+	defer file.Close()
+
+	keyCh := readKeys(file)
+	key, ok := <-keyCh
+	if !ok {
+		t.Fatal("key channel closed before event")
+	}
+	if key.kind != keyClearQuery {
+		t.Fatalf("key kind = %v, want %v", key.kind, keyClearQuery)
 	}
 }
 

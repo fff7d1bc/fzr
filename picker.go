@@ -120,6 +120,28 @@ func (m *pickerModel) moveQueryCursor(delta int) {
 	m.clampQueryCursor()
 }
 
+func (m *pickerModel) moveQueryCursorHome() {
+	m.queryCursor = 0
+}
+
+func (m *pickerModel) moveQueryCursorEnd() {
+	m.queryCursor = len(m.query)
+}
+
+func (m *pickerModel) clearQuery() {
+	m.clampQueryCursor()
+	if len(m.query) == 0 {
+		return
+	}
+	m.resetRecentSort()
+	m.query = nil
+	m.queryCursor = 0
+	m.lastEditAppend = false
+	m.selected = 0
+	m.offset = 0
+	m.queryDirty = m.appliedQuery != ""
+}
+
 func (m *pickerModel) resetRecentSort() {
 	if !m.recentSortActive {
 		return
@@ -534,11 +556,16 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 			if key.kind == keyNoop {
 				continue
 			}
-			if key.kind == keyRight || key.kind == keyLeft {
-				if key.kind == keyRight {
+			if key.kind == keyRight || key.kind == keyLeft || key.kind == keyHome || key.kind == keyEnd {
+				switch key.kind {
+				case keyRight:
 					model.moveQueryCursor(1)
-				} else {
+				case keyLeft:
 					model.moveQueryCursor(-1)
+				case keyHome:
+					model.moveQueryCursorHome()
+				case keyEnd:
+					model.moveQueryCursorEnd()
 				}
 				renderer.renderPrompt()
 				continue
@@ -551,6 +578,9 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 				rendered = startQueryTimer()
 			case keyBackspace:
 				model.backspace()
+				rendered = startQueryTimer()
+			case keyClearQuery:
+				model.clearQuery()
 				rendered = startQueryTimer()
 			case keyDown:
 				applyPendingQuery()
@@ -589,9 +619,12 @@ const (
 	keyDown
 	keyLeft
 	keyRight
+	keyHome
+	keyEnd
 	keyEnter
 	keyCancel
 	keySortRecent
+	keyClearQuery
 	keyNoop
 )
 
@@ -643,7 +676,7 @@ func readKeys(stdin *os.File) <-chan keyEvent {
 						if !ok {
 							return
 						}
-						out <- arrowKeyEvent(sequence[0])
+						out <- csiKeyEvent(sequence)
 						continue
 					}
 				}
@@ -652,6 +685,8 @@ func readKeys(stdin *os.File) <-chan keyEvent {
 				out <- keyEvent{kind: keyEnter}
 			case 0:
 				out <- keyEvent{kind: keySortRecent}
+			case 21:
+				out <- keyEvent{kind: keyClearQuery}
 			case 14:
 				out <- keyEvent{kind: keyDown}
 			case 16:
@@ -678,9 +713,28 @@ func arrowKeyEvent(code byte) keyEvent {
 		return keyEvent{kind: keyRight}
 	case 'D':
 		return keyEvent{kind: keyLeft}
+	case 'H':
+		return keyEvent{kind: keyHome}
+	case 'F':
+		return keyEvent{kind: keyEnd}
 	default:
 		return keyEvent{kind: keyNoop}
 	}
+}
+
+func csiKeyEvent(sequence []byte) keyEvent {
+	if len(sequence) == 1 {
+		return arrowKeyEvent(sequence[0])
+	}
+	if len(sequence) == 2 && sequence[1] == '~' {
+		switch sequence[0] {
+		case '1', '7':
+			return keyEvent{kind: keyHome}
+		case '4', '8':
+			return keyEvent{kind: keyEnd}
+		}
+	}
+	return keyEvent{kind: keyNoop}
 }
 
 func readCSISequence(reader *bufio.Reader, first byte) ([]byte, bool) {
