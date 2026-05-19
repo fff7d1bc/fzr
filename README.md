@@ -105,6 +105,9 @@ Keys
 - Enter prints the selected path.
 - Esc cancels.
 
+On macOS, Ctrl-Space may be assigned to input source switching. If Ctrl-Space
+does nothing in `fzr`, check the macOS keyboard shortcuts for input sources.
+
 Directories are shown with a trailing `/`. Matching uses the real candidate
 path, not display-only markers.
 
