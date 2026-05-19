@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"unicode"
@@ -19,30 +20,52 @@ func rankEntries(entries []Entry, query string, fallbackSort SortMode) []Match {
 }
 
 func rankEntriesWithOptions(entries []Entry, query string, fallbackSort SortMode, caseSensitive bool) []Match {
+	matches, _ := rankEntriesWithOptionsContext(context.Background(), entries, query, fallbackSort, caseSensitive)
+	return matches
+}
+
+func rankEntriesWithOptionsContext(ctx context.Context, entries []Entry, query string, fallbackSort SortMode, caseSensitive bool) ([]Match, bool) {
 	if query == "" {
-		return plainEntryMatches(entries, fallbackSort)
+		return plainEntryMatchesContext(ctx, entries, fallbackSort)
 	}
 
 	queryPlan := makeQueryPlan(query)
 	if len(queryPlan.specs) == 0 {
-		return rankEntries(entries, "", fallbackSort)
+		return plainEntryMatchesContext(ctx, entries, fallbackSort)
 	}
 	matches := make([]rankedMatch, 0, initialRankedCapacity(len(entries), queryPlan))
-	for _, entry := range entries {
+	for i, entry := range entries {
+		if i&255 == 0 && ctx.Err() != nil {
+			return nil, false
+		}
 		matches = appendRankedEntry(matches, entry, queryPlan, caseSensitive)
 	}
-	return sortedMatches(matches)
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	return sortedMatches(matches), true
 }
 
 func plainEntryMatches(entries []Entry, fallbackSort SortMode) []Match {
+	matches, _ := plainEntryMatchesContext(context.Background(), entries, fallbackSort)
+	return matches
+}
+
+func plainEntryMatchesContext(ctx context.Context, entries []Entry, fallbackSort SortMode) ([]Match, bool) {
 	matches := make([]Match, 0, len(entries))
-	for _, entry := range entries {
+	for i, entry := range entries {
+		if i&255 == 0 && ctx.Err() != nil {
+			return nil, false
+		}
 		matches = append(matches, Match{Entry: entry})
+	}
+	if ctx.Err() != nil {
+		return nil, false
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		return entryLess(matches[i].Entry, matches[j].Entry, fallbackSort)
 	})
-	return matches
+	return matches, ctx.Err() == nil
 }
 
 func appendRankedEntry(matches []rankedMatch, entry Entry, plan queryPlan, caseSensitive bool) []rankedMatch {
@@ -196,24 +219,38 @@ func rankMatches(matches []Match, query string, fallbackSort SortMode) []Match {
 }
 
 func rankMatchesWithOptions(matches []Match, query string, fallbackSort SortMode, caseSensitive bool) []Match {
+	out, _ := rankMatchesWithOptionsContext(context.Background(), matches, query, fallbackSort, caseSensitive)
+	return out
+}
+
+func rankMatchesWithOptionsContext(ctx context.Context, matches []Match, query string, fallbackSort SortMode, caseSensitive bool) ([]Match, bool) {
 	if query == "" {
 		out := make([]Match, len(matches))
 		copy(out, matches)
+		if ctx.Err() != nil {
+			return nil, false
+		}
 		sort.SliceStable(out, func(i, j int) bool {
 			return entryLess(out[i].Entry, out[j].Entry, fallbackSort)
 		})
-		return out
+		return out, ctx.Err() == nil
 	}
 
 	queryPlan := makeQueryPlan(query)
 	if len(queryPlan.specs) == 0 {
-		return rankMatches(matches, "", fallbackSort)
+		return rankMatchesWithOptionsContext(ctx, matches, "", fallbackSort, caseSensitive)
 	}
 	ranked := make([]rankedMatch, 0, initialRankedCapacity(len(matches), queryPlan))
-	for _, match := range matches {
+	for i, match := range matches {
+		if i&255 == 0 && ctx.Err() != nil {
+			return nil, false
+		}
 		ranked = appendRankedEntry(ranked, match.Entry, queryPlan, caseSensitive)
 	}
-	return sortedMatches(ranked)
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	return sortedMatches(ranked), true
 }
 
 type pathScore struct {

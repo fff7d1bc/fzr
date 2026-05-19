@@ -455,7 +455,47 @@ func (r pickerRenderer) renderPrompt() {
 	r.renderFull()
 }
 
+type queryJob struct {
+	id             uint64
+	query          string
+	entriesVersion uint64
+	narrow         bool
+	entries        []Entry
+	matches        []Match
+	fallbackSort   SortMode
+	caseSensitive  bool
+}
+
+type queryJobResult struct {
+	id             uint64
+	query          string
+	entriesVersion uint64
+	fullMatches    []Match
+}
+
+type queryRanker func(context.Context, queryJob) ([]Match, bool)
+
+func defaultQueryRanker(ctx context.Context, job queryJob) ([]Match, bool) {
+	if job.narrow {
+		return rankMatchesWithOptionsContext(ctx, job.matches, job.query, job.fallbackSort, job.caseSensitive)
+	}
+	return rankEntriesWithOptionsContext(ctx, job.entries, job.query, job.fallbackSort, job.caseSensitive)
+}
+
+type pendingQueryAction int
+
+const (
+	pendingQueryNone pendingQueryAction = iota
+	pendingQueryEnter
+	pendingQuerySortRecent
+	pendingQuerySortRecentEnter
+)
+
 func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, renderer pickerRenderer, scanInterval time.Duration, queryDebounce func(*pickerModel) time.Duration) (Entry, error) {
+	return pickEntryWithRendererAndRanker(ctx, model, scanCh, keyCh, renderer, scanInterval, queryDebounce, defaultQueryRanker)
+}
+
+func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, renderer pickerRenderer, scanInterval time.Duration, queryDebounce func(*pickerModel) time.Duration, ranker queryRanker) (Entry, error) {
 	var pending []Entry
 	var tick <-chan time.Time
 	if scanInterval > 0 {
@@ -478,7 +518,108 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 		queryTick = nil
 	}
 	defer stopQueryTimer()
+	var queryJobID uint64
+	var activeQueryID uint64
+	var cancelQuery context.CancelFunc
+	queryResultCh := make(chan queryJobResult, 1)
+	pendingAction := pendingQueryNone
+	cancelActiveQuery := func() {
+		if cancelQuery == nil {
+			return
+		}
+		cancelQuery()
+		cancelQuery = nil
+		activeQueryID = 0
+	}
+	defer cancelActiveQuery()
+	applyQueryResult := func(result queryJobResult) bool {
+		if result.id != activeQueryID || result.query != string(model.query) || result.entriesVersion != model.entriesVersion {
+			return false
+		}
+		cancelQuery = nil
+		activeQueryID = 0
+		model.appliedQuery = result.query
+		model.queryDirty = false
+		model.fullMatches = result.fullMatches
+		model.matches = effectiveMatches(model.fullMatches, model.appliedQuery)
+		model.matchedEntriesVersion = result.entriesVersion
+		model.recentSortActive = false
+		model.normalizeSelection()
+		return true
+	}
+	runPendingAction := func() (Entry, bool, error) {
+		action := pendingAction
+		pendingAction = pendingQueryNone
+		switch action {
+		case pendingQueryEnter:
+			entry, ok := model.selectedEntry()
+			if !ok {
+				return Entry{}, false, errPickerCanceled
+			}
+			return entry, true, nil
+		case pendingQuerySortRecent:
+			model.sortCurrentMatchesNewest()
+		case pendingQuerySortRecentEnter:
+			model.sortCurrentMatchesNewest()
+			entry, ok := model.selectedEntry()
+			if !ok {
+				return Entry{}, false, errPickerCanceled
+			}
+			return entry, true, nil
+		}
+		return Entry{}, false, nil
+	}
+	startQueryJob := func(forceAsync bool) bool {
+		if !model.queryDirty {
+			return false
+		}
+		stopQueryTimer()
+		cancelActiveQuery()
+		nextQuery := string(model.query)
+		candidates := len(model.entries)
+		narrow := model.canNarrowTo(nextQuery)
+		if narrow {
+			candidates = len(model.fullMatches)
+		}
+		if !forceAsync && candidates <= queryDebounceImmediateThreshold {
+			model.applyQuery()
+			return false
+		}
+		queryJobID++
+		jobID := queryJobID
+		jobCtx, cancel := context.WithCancel(ctx)
+		cancelQuery = cancel
+		activeQueryID = jobID
+		job := queryJob{
+			id:             jobID,
+			query:          nextQuery,
+			entriesVersion: model.entriesVersion,
+			narrow:         narrow,
+			entries:        model.entries,
+			matches:        model.fullMatches,
+			fallbackSort:   model.fallbackSort,
+			caseSensitive:  model.caseSensitive,
+		}
+		go func() {
+			fullMatches, ok := ranker(jobCtx, job)
+			if !ok {
+				return
+			}
+			result := queryJobResult{
+				id:             job.id,
+				query:          job.query,
+				entriesVersion: job.entriesVersion,
+				fullMatches:    fullMatches,
+			}
+			select {
+			case queryResultCh <- result:
+			case <-jobCtx.Done():
+			}
+		}()
+		return true
+	}
 	startQueryTimer := func() bool {
+		cancelActiveQuery()
 		nextQuery := string(model.query)
 		delay := model.queryDebounceDelayFor(nextQuery)
 		if queryDebounce != nil {
@@ -503,52 +644,75 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 		queryTick = queryTimer.C
 		return false
 	}
-	applyPendingQuery := func() {
+	applyPendingQuery := func(forceAsync bool) bool {
 		if !model.queryDirty {
-			return
+			return false
 		}
-		stopQueryTimer()
-		model.applyQuery()
+		if activeQueryID != 0 {
+			return true
+		}
+		return startQueryJob(forceAsync)
 	}
-	flushPending := func() {
+	flushPending := func() bool {
 		if len(pending) == 0 {
-			return
+			return false
 		}
+		hadQueryWork := model.queryDirty || activeQueryID != 0
+		cancelActiveQuery()
 		model.addEntries(pending)
 		pending = nil
+		return hadQueryWork && model.queryDirty
 	}
 	renderer.renderFull()
 	for {
 		select {
 		case result, ok := <-scanCh:
+			restartQuery := false
 			if !ok {
-				flushPending()
+				restartQuery = flushPending()
 				model.scanning = false
 				scanCh = nil
 			} else if result.Err != nil {
-				flushPending()
+				restartQuery = flushPending()
 				model.scanError = result.Err
 				model.scanning = false
 			} else {
 				pending = append(pending, result.Entries...)
 			}
 			if !ok || model.scanError != nil || scanInterval <= 0 {
-				flushPending()
-				renderer.renderFull()
+				restartQuery = flushPending() || restartQuery
+				if restartQuery {
+					renderer.renderFull()
+					startQueryTimer()
+				} else {
+					renderer.renderFull()
+				}
 			}
 			if model.scanError != nil {
 				return Entry{}, model.scanError
 			}
 		case <-tick:
 			if len(pending) > 0 {
-				flushPending()
-				renderer.renderFull()
+				if flushPending() {
+					renderer.renderFull()
+					startQueryTimer()
+				} else {
+					renderer.renderFull()
+				}
 			}
 		case <-queryTick:
 			queryTick = nil
 			flushPending()
-			model.applyQuery()
+			startQueryJob(false)
 			renderer.renderFull()
+		case result := <-queryResultCh:
+			if applyQueryResult(result) {
+				entry, done, err := runPendingAction()
+				if err != nil || done {
+					return entry, err
+				}
+				renderer.renderFull()
+			}
 		case key, ok := <-keyCh:
 			if !ok {
 				return Entry{}, errPickerCanceled
@@ -583,20 +747,36 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 				model.clearQuery()
 				rendered = startQueryTimer()
 			case keyDown:
-				applyPendingQuery()
+				if applyPendingQuery(false) {
+					rendered = true
+				}
 				model.move(1)
 			case keyUp:
-				applyPendingQuery()
+				if applyPendingQuery(false) {
+					rendered = true
+				}
 				model.move(-1)
 			case keyEnter:
-				applyPendingQuery()
+				if applyPendingQuery(true) {
+					if pendingAction == pendingQuerySortRecent {
+						pendingAction = pendingQuerySortRecentEnter
+					} else {
+						pendingAction = pendingQueryEnter
+					}
+					renderer.renderFull()
+					continue
+				}
 				entry, ok := model.selectedEntry()
 				if !ok {
 					return Entry{}, errPickerCanceled
 				}
 				return entry, nil
 			case keySortRecent:
-				applyPendingQuery()
+				if applyPendingQuery(true) {
+					pendingAction = pendingQuerySortRecent
+					renderer.renderFull()
+					continue
+				}
 				model.sortCurrentMatchesNewest()
 			case keyCancel:
 				return Entry{}, errPickerCanceled

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,6 +20,40 @@ func TestScorePathWithCaseRejectsCaseMismatch(t *testing.T) {
 	}
 	if _, ok := scorePathForQueryPlan("Src/FooBar.go", makeQueryPlan("SFB"), true); !ok {
 		t.Fatal("expected case-sensitive query to match exact case")
+	}
+}
+
+func TestRankEntriesWithOptionsContextStopsWhenCanceled(t *testing.T) {
+	entries := make([]Entry, 2048)
+	for i := range entries {
+		entries[i] = Entry{Path: "alpha/beta/gamma.txt", Type: TypeFile}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	matches, ok := rankEntriesWithOptionsContext(ctx, entries, "alpha", SortPath, false)
+	if ok {
+		t.Fatal("rankEntriesWithOptionsContext ok = true, want false")
+	}
+	if matches != nil {
+		t.Fatalf("matches = %#v, want nil after cancellation", matches)
+	}
+}
+
+func TestRankMatchesWithOptionsContextStopsWhenCanceled(t *testing.T) {
+	matches := make([]Match, 2048)
+	for i := range matches {
+		matches[i] = Match{Entry: Entry{Path: "alpha/beta/gamma.txt", Type: TypeFile}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	filtered, ok := rankMatchesWithOptionsContext(ctx, matches, "alpha", SortPath, false)
+	if ok {
+		t.Fatal("rankMatchesWithOptionsContext ok = true, want false")
+	}
+	if filtered != nil {
+		t.Fatalf("matches = %#v, want nil after cancellation", filtered)
 	}
 }
 

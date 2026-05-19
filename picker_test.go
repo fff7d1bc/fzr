@@ -1101,6 +1101,159 @@ func TestPickEntryDebouncesQueryFiltering(t *testing.T) {
 	}
 }
 
+func TestPickEntryKeepsPromptResponsiveDuringAsyncFiltering(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	for i := 0; i < queryDebounceImmediateThreshold+1; i++ {
+		model.addEntry(Entry{Path: "candidate.txt", Type: TypeFile})
+	}
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	queries := make(chan string, 20)
+	started := make(chan string, 10)
+	ranker := func(ctx context.Context, job queryJob) ([]Match, bool) {
+		started <- job.query
+		<-ctx.Done()
+		return nil, false
+	}
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, pickerRenderer{
+			full: func() {
+				queries <- string(model.query)
+			},
+			prompt: func() {
+				queries <- string(model.query)
+			},
+		}, time.Hour, fixedQueryDebounce(time.Millisecond), ranker)
+		done <- err
+	}()
+
+	waitForString(t, queries, "")
+	keyCh <- keyEvent{kind: keyRune, r: 'b'}
+	waitForString(t, queries, "b")
+	waitForString(t, started, "b")
+
+	keyCh <- keyEvent{kind: keyRune, r: 'e'}
+	waitForString(t, queries, "be")
+
+	keyCh <- keyEvent{kind: keyCancel}
+	if err := <-done; err != errPickerCanceled {
+		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
+	}
+}
+
+func TestPickEntryEnterWaitsForAsyncFilteringResult(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.addEntry(Entry{Path: "alpha", Type: TypeFile})
+	model.addEntry(Entry{Path: "beta", Type: TypeFile})
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 1)
+	release := make(chan []Match, 1)
+	ranker := func(ctx context.Context, job queryJob) ([]Match, bool) {
+		started <- job
+		select {
+		case matches := <-release:
+			return matches, true
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+	rendered := make(chan struct{}, 10)
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, testRenderer(rendered), time.Hour, fixedQueryDebounce(time.Hour), ranker)
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keyRune, r: 'b'}
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keyEnter}
+	job := waitForQueryJob(t, started)
+	if job.query != "b" {
+		t.Fatalf("query job = %q, want b", job.query)
+	}
+	release <- []Match{{Entry: Entry{Path: "beta", Type: TypeFile}}}
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "beta" {
+			t.Fatalf("selected path = %q, want beta", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for selection")
+	}
+}
+
+func TestPickEntrySortRecentThenEnterWaitsForAsyncFilteringResult(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.addEntry(Entry{Path: "alpha-old.jpg", Type: TypeFile, ModTimeNS: 1})
+	model.addEntry(Entry{Path: "alpha-new.jpg", Type: TypeFile, ModTimeNS: 2})
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 1)
+	release := make(chan []Match, 1)
+	ranker := func(ctx context.Context, job queryJob) ([]Match, bool) {
+		started <- job
+		select {
+		case matches := <-release:
+			return matches, true
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+	rendered := make(chan struct{}, 20)
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, testRenderer(rendered), time.Hour, fixedQueryDebounce(time.Hour), ranker)
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keyRune, r: 'a'}
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keySortRecent}
+	job := waitForQueryJob(t, started)
+	if job.query != "a" {
+		t.Fatalf("query job = %q, want a", job.query)
+	}
+	keyCh <- keyEvent{kind: keyEnter}
+	release <- []Match{
+		{Entry: Entry{Path: "alpha-old.jpg", Type: TypeFile, ModTimeNS: 1}},
+		{Entry: Entry{Path: "alpha-new.jpg", Type: TypeFile, ModTimeNS: 2}},
+	}
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "alpha-new.jpg" {
+			t.Fatalf("selected path = %q, want newest alpha match", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for selection")
+	}
+}
+
 func TestPickEntryImmediateQueryFilteringForSmallCandidateSet(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.scanning = false
@@ -1861,6 +2014,32 @@ func waitForRenderCount(t *testing.T, rendered <-chan struct{}, want int) {
 		case <-time.After(time.Second):
 			t.Fatalf("timed out waiting for render %d of %d", i+1, want)
 		}
+	}
+}
+
+func waitForString(t *testing.T, values <-chan string, want string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case got := <-values:
+			if got == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q", want)
+		}
+	}
+}
+
+func waitForQueryJob(t *testing.T, jobs <-chan queryJob) queryJob {
+	t.Helper()
+	select {
+	case job := <-jobs:
+		return job
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for query job")
+		return queryJob{}
 	}
 }
 
