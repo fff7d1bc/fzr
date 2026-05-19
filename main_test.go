@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -199,11 +200,36 @@ func TestRunEvalZshPrintsIntegration(t *testing.T) {
 	if !strings.Contains(got, "zle -N _fzr_append_path_to_buffer") {
 		t.Fatalf("eval output missing widget registration: %q", got)
 	}
+	if !strings.Contains(got, "emulate -L zsh") {
+		t.Fatalf("eval output missing local zsh emulation: %q", got)
+	}
+	if !strings.Contains(got, "zle -R") {
+		t.Fatalf("eval output missing zle redraw: %q", got)
+	}
+	if strings.Contains(got, "zle_bracketed_paste") {
+		t.Fatalf("eval output controls bracketed paste directly: %q", got)
+	}
+	if strings.Contains(got, "reset-prompt") {
+		t.Fatalf("eval output resets prompt directly: %q", got)
+	}
 	if strings.Contains(got, "command -v fzr") {
 		t.Fatalf("eval output contains command guard: %q", got)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestZshIntegrationSyntax(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	cmd := exec.Command(zsh, "-n")
+	cmd.Stdin = strings.NewReader(zshIntegrationScript)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("zsh -n failed: %v\n%s", err, output)
 	}
 }
 
