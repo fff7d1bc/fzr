@@ -1,6 +1,12 @@
 package main
 
 const zshIntegrationScript = `_fzr_append_path_to_buffer() {
+    # Disable zsh-autosuggestions plugin to avoid conflicting behaviour where both try to modify command line buffer
+    # Restore original state after the tool finishes
+    local _fzr_autosuggest_was_disabled=${+_ZSH_AUTOSUGGEST_DISABLED}
+    if (( ! _fzr_autosuggest_was_disabled )) && command -v _zsh_autosuggest_widget_disable >/dev/null 2>&1; then
+        _zsh_autosuggest_widget_disable
+    fi
     emulate -L zsh
     autoload -Uz split-shell-arguments
 
@@ -61,6 +67,9 @@ const zshIntegrationScript = `_fzr_append_path_to_buffer() {
         LBUFFER+="${(q)selected_path}"
     fi
     zle -R
+    if (( ! _fzr_autosuggest_was_disabled )) && command -v _zsh_autosuggest_widget_enable >/dev/null 2>&1; then
+        _zsh_autosuggest_widget_enable
+    fi
     return "${fzr_status}"
 }
 
