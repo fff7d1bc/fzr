@@ -587,6 +587,37 @@ func TestPickEntrySortRecentAppliesPendingQuery(t *testing.T) {
 	}
 }
 
+func TestPickEntrySortRecentRendersSortingStatus(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.addEntries([]Entry{
+		{Path: "old.jpg", Type: TypeFile, ModTimeNS: 1},
+		{Path: "new.jpg", Type: TypeFile, ModTimeNS: 2},
+	})
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	statuses := make(chan string, 10)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pickEntryWithRenderer(context.Background(), model, scanCh, keyCh, pickerRenderer{
+			full: func() {
+				statuses <- model.statusText()
+			},
+		}, time.Hour, fixedQueryDebounce(time.Hour))
+		done <- err
+	}()
+
+	waitForString(t, statuses, "ready")
+	keyCh <- keyEvent{kind: keySortRecent}
+	waitForString(t, statuses, "sorting newest")
+
+	keyCh <- keyEvent{kind: keyCancel}
+	if err := <-done; err != errPickerCanceled {
+		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
+	}
+}
+
 func TestPickEntryClearQueryAppliesEmptyQuery(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.scanning = false
@@ -1033,6 +1064,34 @@ func TestPickEntryFlushesPendingScanEntriesOnTimer(t *testing.T) {
 	keyCh <- keyEvent{kind: keyEnter}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPickEntryScanRendersUseMinimumInterval(t *testing.T) {
+	model := newPickerModel(SortPath)
+	scanCh := make(chan ScanResult, 10)
+	for i := 0; i < 3; i++ {
+		scanCh <- ScanResult{Entries: []Entry{{Path: string(rune('a' + i)), Type: TypeFile}}}
+	}
+	keyCh := make(chan keyEvent)
+	rendered := make(chan struct{}, 10)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pickEntryWithRenderer(context.Background(), model, scanCh, keyCh, testRenderer(rendered), time.Millisecond, fixedQueryDebounce(time.Hour))
+		done <- err
+	}()
+
+	waitForRenderCount(t, rendered, 1)
+	select {
+	case <-rendered:
+		t.Fatal("scan rendered before minimum interval")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	keyCh <- keyEvent{kind: keyCancel}
+	if err := <-done; err != errPickerCanceled {
+		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
 	}
 }
 
@@ -1883,16 +1942,17 @@ func TestWritePromptLineKeepsStartVisibleForStartCursor(t *testing.T) {
 	}
 }
 
-func TestRenderPickerOmitsStatusLine(t *testing.T) {
+func TestRenderPickerShowsStatusLine(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.addEntry(Entry{Path: "alpha", Type: TypeFile})
+	model.addEntry(Entry{Path: "beta", Type: TypeDir})
 
 	var out bytes.Buffer
 	renderPicker(&out, model, 80, pickerThemeForColor(false))
 
 	rendered := out.String()
-	if strings.Contains(rendered, "scanning | paths:") || strings.Contains(rendered, "matches:") {
-		t.Fatalf("status line found in render output: %q", rendered)
+	if !strings.Contains(rendered, "· 2 total, 2 matched, scanning") {
+		t.Fatalf("status line missing from render output: %q", rendered)
 	}
 	if !strings.Contains(rendered, "> ") {
 		t.Fatalf("prompt marker missing from render output: %q", rendered)
@@ -1900,11 +1960,96 @@ func TestRenderPickerOmitsStatusLine(t *testing.T) {
 	model.scanning = false
 	out.Reset()
 	renderPicker(&out, model, 80, pickerThemeForColor(false))
-	if strings.Contains(out.String(), "complete | paths:") || strings.Contains(out.String(), "matches:") {
-		t.Fatalf("idle render included old status line: %q", out.String())
+	if !strings.Contains(out.String(), "· 2 total, 2 matched, ready") {
+		t.Fatalf("ready status line missing from render output: %q", out.String())
 	}
 	if !strings.Contains(out.String(), "> ") {
 		t.Fatalf("idle prompt missing prompt marker: %q", out.String())
+	}
+}
+
+func TestRenderPickerStylesStatusLineWithColor(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.addEntry(Entry{Path: "alpha", Type: TypeFile})
+
+	var out bytes.Buffer
+	renderPicker(&out, model, 80, pickerThemeForColor(true))
+
+	rendered := out.String()
+	if strings.Contains(rendered, "\x1b[48;5;") {
+		t.Fatalf("status line unexpectedly used background color: %q", rendered)
+	}
+	if strings.Contains(rendered, "\x1b[1m") {
+		t.Fatalf("status line unexpectedly used bold: %q", rendered)
+	}
+	if !strings.Contains(rendered, "\x1b[38;5;242m· 1 total, 1 matched, ready\x1b[0m") {
+		t.Fatalf("styled status line missing from render output: %q", rendered)
+	}
+}
+
+func TestPickerModelStatusLineShowsVisibleAndFullMatches(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.entries = make([]Entry, 617468)
+	model.fullMatches = make([]Match, 1234)
+	model.matches = model.fullMatches[:50]
+
+	if got, want := model.statusLine(), "617k total, 1k matched, showing top 50, ready"; got != want {
+		t.Fatalf("status line = %q, want %q", got, want)
+	}
+}
+
+func TestPickerModelStatusLineOmitsShownWhenAllMatchesVisible(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.entries = make([]Entry, 1200)
+	model.fullMatches = make([]Match, 300)
+	model.matches = model.fullMatches
+
+	if got, want := model.statusLine(), "1k total, 300 matched, ready"; got != want {
+		t.Fatalf("status line = %q, want %q", got, want)
+	}
+}
+
+func TestCompactCountUsesWholeSuffixes(t *testing.T) {
+	tests := []struct {
+		n    int
+		want string
+	}{
+		{n: 0, want: "0"},
+		{n: 999, want: "999"},
+		{n: 1000, want: "1k"},
+		{n: 654321, want: "654k"},
+		{n: 1000000, want: "1m"},
+		{n: 23500000, want: "23m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := compactCount(tt.n); got != tt.want {
+				t.Fatalf("compact count = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickerModelStatusTextShowsCombinedWork(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.filtering = true
+
+	if got, want := model.statusText(), "scanning, filtering"; got != want {
+		t.Fatalf("status text = %q, want %q", got, want)
+	}
+
+	model.scanning = false
+	if got, want := model.statusText(), "filtering"; got != want {
+		t.Fatalf("status text = %q, want %q", got, want)
+	}
+
+	model.filtering = false
+	model.sortingNewest = true
+	if got, want := model.statusText(), "sorting newest"; got != want {
+		t.Fatalf("status text = %q, want %q", got, want)
 	}
 }
 
@@ -1951,6 +2096,20 @@ func TestRenderPickerDoesNotEmitNewlines(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "\x1b[1B") {
 		t.Fatalf("render used column-preserving cursor down: %q", out.String())
+	}
+}
+
+func TestPrepareAndClearPickerReservePromptStatusAndRows(t *testing.T) {
+	var prepared bytes.Buffer
+	preparePicker(&prepared)
+	if got, want := strings.Count(prepared.String(), "\r\n"), pickerRows+pickerStatusRows+1; got != want {
+		t.Fatalf("prepared reserved lines = %d, want %d", got, want)
+	}
+
+	var cleared bytes.Buffer
+	clearPicker(&cleared)
+	if got, want := strings.Count(cleared.String(), "\x1b[2K"), pickerRows+pickerStatusRows+1; got != want {
+		t.Fatalf("cleared lines = %d, want %d", got, want)
 	}
 }
 

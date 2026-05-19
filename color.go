@@ -21,6 +21,8 @@ type pickerTheme struct {
 	matchReset  string
 	dimStart    string
 	dimReset    string
+	statusStart string
+	statusReset string
 	selectStart string
 	selectReset string
 	reset       string
@@ -49,6 +51,8 @@ func pickerThemeForColorAndStyle(color bool, style matchStyle) pickerTheme {
 		matchReset:  matchReset,
 		dimStart:    "\x1b[2m",
 		dimReset:    "\x1b[22m",
+		statusStart: "\x1b[38;5;242m",
+		statusReset: "\x1b[0m",
 		selectStart: "\x1b[7m",
 		selectReset: "\x1b[0m",
 		reset:       "\x1b[0m",

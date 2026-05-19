@@ -17,8 +17,10 @@ import (
 )
 
 const pickerRows = 10
-const pickerReservedLines = pickerRows + 1
+const pickerStatusRows = 1
+const pickerReservedLines = pickerRows + pickerStatusRows + 1
 const scanRenderInterval = time.Second
+const minScanRenderInterval = 250 * time.Millisecond
 
 const (
 	queryDebounceImmediateThreshold = 1_000
@@ -46,6 +48,8 @@ type pickerModel struct {
 	selected              int
 	offset                int
 	scanning              bool
+	filtering             bool
+	sortingNewest         bool
 	scanError             error
 	fallbackSort          SortMode
 	caseSensitive         bool
@@ -496,6 +500,7 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 }
 
 func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, renderer pickerRenderer, scanInterval time.Duration, queryDebounce func(*pickerModel) time.Duration, ranker queryRanker) (Entry, error) {
+	scanInterval = effectiveScanRenderInterval(scanInterval)
 	var pending []Entry
 	var tick <-chan time.Time
 	if scanInterval > 0 {
@@ -530,6 +535,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		cancelQuery()
 		cancelQuery = nil
 		activeQueryID = 0
+		model.filtering = false
 	}
 	defer cancelActiveQuery()
 	applyQueryResult := func(result queryJobResult) bool {
@@ -538,6 +544,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		}
 		cancelQuery = nil
 		activeQueryID = 0
+		model.filtering = false
 		model.appliedQuery = result.query
 		model.queryDirty = false
 		model.fullMatches = result.fullMatches
@@ -546,6 +553,12 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		model.recentSortActive = false
 		model.normalizeSelection()
 		return true
+	}
+	sortNewestWithStatus := func() {
+		model.sortingNewest = true
+		renderer.renderFull()
+		model.sortCurrentMatchesNewest()
+		model.sortingNewest = false
 	}
 	runPendingAction := func() (Entry, bool, error) {
 		action := pendingAction
@@ -558,9 +571,9 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			}
 			return entry, true, nil
 		case pendingQuerySortRecent:
-			model.sortCurrentMatchesNewest()
+			sortNewestWithStatus()
 		case pendingQuerySortRecentEnter:
-			model.sortCurrentMatchesNewest()
+			sortNewestWithStatus()
 			entry, ok := model.selectedEntry()
 			if !ok {
 				return Entry{}, false, errPickerCanceled
@@ -590,6 +603,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		jobCtx, cancel := context.WithCancel(ctx)
 		cancelQuery = cancel
 		activeQueryID = jobID
+		model.filtering = true
 		job := queryJob{
 			id:             jobID,
 			query:          nextQuery,
@@ -777,7 +791,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 					renderer.renderFull()
 					continue
 				}
-				model.sortCurrentMatchesNewest()
+				sortNewestWithStatus()
 			case keyCancel:
 				return Entry{}, errPickerCanceled
 			}
@@ -967,6 +981,7 @@ func clearPicker(w io.Writer) {
 
 func renderPicker(w io.Writer, m *pickerModel, width int, theme pickerTheme) {
 	renderPickerPrompt(w, m, width, theme)
+	renderPickerStatus(w, m, width, theme)
 
 	highlightQueries := m.highlightQueries()
 	start, end := visibleResultRange(len(m.matches), m.offset)
@@ -986,6 +1001,17 @@ func renderPickerPrompt(w io.Writer, m *pickerModel, width int, theme pickerThem
 	writePromptLine(w, prompt, cursor, width, theme)
 }
 
+func renderPickerStatus(w io.Writer, m *pickerModel, width int, theme pickerTheme) {
+	line := "· " + m.statusLine()
+	if width > 0 {
+		line = trimPathForDisplay(line, width)
+	}
+	if theme.statusStart != "" {
+		line = theme.statusStart + line + theme.statusReset
+	}
+	writeStyledLine(w, line)
+}
+
 func (m *pickerModel) promptLine() string {
 	line, _ := m.promptLineAndCursor()
 	return line
@@ -999,6 +1025,51 @@ func (m *pickerModel) promptLineAndCursor() (string, int) {
 		return prefix, len([]rune(prefix))
 	}
 	return prefix + activeQuery, len([]rune(prefix)) + m.queryCursor
+}
+
+func (m *pickerModel) statusLine() string {
+	total := compactCount(len(m.entries))
+	matched := compactCount(len(m.fullMatches))
+	if len(m.matches) < len(m.fullMatches) {
+		return fmt.Sprintf("%s total, %s matched, showing top %s, %s", total, matched, compactCount(len(m.matches)), m.statusText())
+	}
+	return fmt.Sprintf("%s total, %s matched, %s", total, matched, m.statusText())
+}
+
+func (m *pickerModel) statusText() string {
+	switch {
+	case m.scanning && m.filtering:
+		return "scanning, filtering"
+	case m.sortingNewest:
+		return "sorting newest"
+	case m.scanning:
+		return "scanning"
+	case m.filtering:
+		return "filtering"
+	default:
+		return "ready"
+	}
+}
+
+func compactCount(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%dk", n/1000)
+	default:
+		return fmt.Sprintf("%dm", n/1_000_000)
+	}
+}
+
+func effectiveScanRenderInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	if interval < minScanRenderInterval {
+		return minScanRenderInterval
+	}
+	return interval
 }
 
 func displayPath(entry Entry) string {
