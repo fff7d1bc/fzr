@@ -197,14 +197,23 @@ func TestRunEvalZshPrintsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := stdout.String()
-	if !strings.Contains(got, "zle -N _fzr_append_path_to_buffer") {
+	if !strings.Contains(got, "zle -N fzr-append-path-to-buffer") {
 		t.Fatalf("eval output missing widget registration: %q", got)
+	}
+	if !strings.Contains(got, "bindkey \"^F\" fzr-append-path-to-buffer") {
+		t.Fatalf("eval output missing Ctrl-F binding: %q", got)
 	}
 	if !strings.Contains(got, "emulate -L zsh") {
 		t.Fatalf("eval output missing local zsh emulation: %q", got)
 	}
+	if !strings.Contains(got, "POSTDISPLAY=") {
+		t.Fatalf("eval output missing zle postdisplay cleanup: %q", got)
+	}
 	if !strings.Contains(got, "zle -R") {
 		t.Fatalf("eval output missing zle redraw: %q", got)
+	}
+	if strings.Contains(got, "autosuggest") {
+		t.Fatalf("eval output references autosuggestions directly: %q", got)
 	}
 	if strings.Contains(got, "zle_bracketed_paste") {
 		t.Fatalf("eval output controls bracketed paste directly: %q", got)

@@ -1,6 +1,6 @@
 package main
 
-const zshIntegrationScript = `_fzr_append_path_to_buffer() {
+const zshIntegrationScript = `fzr-append-path-to-buffer() {
     emulate -L zsh
     autoload -Uz split-shell-arguments
 
@@ -9,6 +9,7 @@ const zshIntegrationScript = `_fzr_append_path_to_buffer() {
     local -a split_reply dir_matches
 
     zle -I
+    POSTDISPLAY=
     fzr_status=0
 
     search_in='.'
@@ -64,6 +65,6 @@ const zshIntegrationScript = `_fzr_append_path_to_buffer() {
     return "${fzr_status}"
 }
 
-zle -N _fzr_append_path_to_buffer
-bindkey "^F" _fzr_append_path_to_buffer
+zle -N fzr-append-path-to-buffer
+bindkey "^F" fzr-append-path-to-buffer
 `
