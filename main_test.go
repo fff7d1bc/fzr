@@ -209,17 +209,14 @@ func TestRunEvalZshPrintsIntegration(t *testing.T) {
 	if !strings.Contains(got, "POSTDISPLAY=") {
 		t.Fatalf("eval output missing zle postdisplay cleanup: %q", got)
 	}
-	if !strings.Contains(got, "zle -R") {
-		t.Fatalf("eval output missing zle redraw: %q", got)
+	if !strings.Contains(got, "zle reset-prompt") {
+		t.Fatalf("eval output missing zle prompt reset: %q", got)
 	}
 	if strings.Contains(got, "autosuggest") {
 		t.Fatalf("eval output references autosuggestions directly: %q", got)
 	}
 	if strings.Contains(got, "zle_bracketed_paste") {
 		t.Fatalf("eval output controls bracketed paste directly: %q", got)
-	}
-	if strings.Contains(got, "reset-prompt") {
-		t.Fatalf("eval output resets prompt directly: %q", got)
 	}
 	if strings.Contains(got, "command -v fzr") {
 		t.Fatalf("eval output contains command guard: %q", got)

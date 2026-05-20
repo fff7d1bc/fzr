@@ -68,7 +68,10 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
         fi
         LBUFFER+="${(q)selected_path}"
     fi
-    zle -R
+    # fzr writes directly to the terminal while zle is active; ask zle to
+    # re-expand and redraw this edit buffer instead of leaving prompt recovery
+    # to happen on a fresh line.
+    zle reset-prompt
     return "${fzr_status}"
 }
 
