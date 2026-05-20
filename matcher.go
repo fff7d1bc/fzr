@@ -35,6 +35,8 @@ func rankEntriesWithOptionsContext(ctx context.Context, entries []Entry, query s
 	}
 	matches := make([]rankedMatch, 0, initialRankedCapacity(len(entries), queryPlan))
 	for i, entry := range entries {
+		// Ranking can run asynchronously for large scans; poll cancellation
+		// often enough to keep typing responsive without checking every entry.
 		if i&255 == 0 && ctx.Err() != nil {
 			return nil, false
 		}
@@ -150,6 +152,8 @@ type queryPlan struct {
 }
 
 func makeQueryPlan(query string) queryPlan {
+	// Whitespace separates independent tokens. Most tokens rank independently,
+	// while repeated or numeric tokens also prefer an ordered disjoint match.
 	specs := makeQuerySpecs(query)
 	plan := queryPlan{
 		specs:          specs,
@@ -173,6 +177,8 @@ func preferDisjointTokenRanking(specs []querySpec) bool {
 	seen := make(map[string]struct{}, len(specs))
 	for _, spec := range specs {
 		if spec.numeric {
+			// Numeric tokens often identify ordered path fragments such as
+			// versions or episode numbers, so prefer non-overlapping placement.
 			return true
 		}
 		key := strings.ToLower(spec.text)
@@ -242,6 +248,8 @@ func rankMatchesWithOptionsContext(ctx context.Context, matches []Match, query s
 	}
 	ranked := make([]rankedMatch, 0, initialRankedCapacity(len(matches), queryPlan))
 	for i, match := range matches {
+		// Re-ranking a narrowed list shares the same cancellation contract as a
+		// full entry ranking job.
 		if i&255 == 0 && ctx.Err() != nil {
 			return nil, false
 		}
@@ -301,6 +309,8 @@ func initialRankedCapacity(candidates int, plan queryPlan) int {
 
 func scorePathForQueryPlan(path string, plan queryPlan, caseSensitive bool) (pathScore, bool) {
 	if canScorePathASCII(path, plan) {
+		// ASCII paths are the common case; avoid rune allocation and Unicode
+		// folding unless either side actually needs it.
 		return scoreASCIIPathForQueryPlan(path, plan, caseSensitive)
 	}
 
@@ -387,6 +397,8 @@ func scorePathRunesWithNumeric(pathRunes, queryRunes []rune, numeric bool, caseS
 		}, true
 	}
 	if numeric {
+		// Do not fuzzy-match digits; "12" should not match a path containing
+		// unrelated "1" and "2" fragments.
 		return tokenScore{}, false
 	}
 	score, span, offset, ok := scoreFzyRunes(pathRunes, queryRunes, caseSensitive)
@@ -415,6 +427,8 @@ func scorePathASCIIWithNumeric(path, query string, numeric bool, caseSensitive b
 		}, true
 	}
 	if numeric {
+		// Keep numeric matching stricter than ordinary text for predictable
+		// ordering of versioned and numbered paths.
 		return tokenScore{}, false
 	}
 	score, span, offset, ok := scoreFzyASCII(path, query, caseSensitive)
@@ -678,6 +692,8 @@ func matchPositionsForQueriesWithCase(path string, queries []string, caseSensiti
 		return nil, false
 	}
 	if plan.preferDisjoint {
+		// Highlight the same ordered token placement used for ranking when it
+		// fully explains the match; otherwise fall back to accepted token spans.
 		if positions, ok := completeDisjointPositionsForQueryPlan(path, plan, caseSensitive); ok {
 			return positions, true
 		}
@@ -817,6 +833,8 @@ func scoreFzyASCII(path, query string, caseSensitive bool) (int, int, int, bool)
 	}
 	windowLen := end - start
 	if windowLen > fzyMaxLen || len(query) > fzyMaxLen || windowLen*len(query) > fzyMaxCells {
+		// Bound DP memory and CPU for very long paths; greedy scoring preserves
+		// interactivity even if it gives up the exact best alignment.
 		return scoreGreedyFzyASCII(path, query, 0, caseSensitive)
 	}
 
@@ -909,6 +927,8 @@ func fzyScoreAndPositionsRunesFrom(pathRunes, queryRunes []rune, startAt int, ca
 	m := end - start
 	n := len(queryRunes)
 	if m > fzyMaxLen || n > fzyMaxLen || m*n > fzyMaxCells {
+		// Unicode DP allocates by window size, so use the same hard limit as the
+		// ASCII path before falling back to greedy alignment.
 		return scoreGreedyFzyRunes(pathRunes, queryRunes, startAt, caseSensitive, wantPositions)
 	}
 
@@ -978,6 +998,8 @@ func fzyScoreAndPositionsRunesFrom(pathRunes, queryRunes []rune, startAt int, ca
 
 	positions := make([]int, n)
 	matchRequired := false
+	// Walk the DP matrices backward to recover one optimal alignment for
+	// highlighting; matchRequired keeps consecutive-match transitions intact.
 	for i, j := n-1, m-1; i >= 0; i-- {
 		for ; j >= 0; j-- {
 			if D[i][j] != fzyScoreMin && (matchRequired || D[i][j] == M[i][j]) {
@@ -1013,6 +1035,8 @@ func fuzzyWindowASCII(path, query string, startAt int, caseSensitive bool) (int,
 		return 0, 0, false
 	}
 	end := last + 1
+	// Extend through later occurrences of the final query byte so DP can choose
+	// a better trailing alignment without scoring the entire path.
 	for i := last + 1; i < len(path); i++ {
 		if asciiEqual(path[i], query[len(query)-1], caseSensitive) {
 			end = i + 1
@@ -1043,6 +1067,8 @@ func fuzzyWindowRunes(pathRunes, queryRunes []rune, startAt int, caseSensitive b
 		return 0, 0, false
 	}
 	end := last + 1
+	// Keep the scoring window tight but include later final-token positions that
+	// may produce a stronger fzy alignment.
 	for i := last + 1; i < len(pathRunes); i++ {
 		if runesEqual(pathRunes[i], queryRunes[len(queryRunes)-1], caseSensitive) {
 			end = i + 1

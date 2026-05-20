@@ -77,6 +77,8 @@ func (m *pickerModel) addEntries(entries []Entry) {
 	m.entries = append(m.entries, entries...)
 	m.entriesVersion++
 	if m.recentSortActive {
+		// Recent sort is a temporary user view; new scan results should not be
+		// spliced into that ordering until a query edit resets it.
 		return
 	}
 	if !m.queryDirty {
@@ -196,6 +198,8 @@ func (m *pickerModel) refresh() {
 func (m *pickerModel) applyQuery() {
 	nextQuery := string(m.query)
 	if m.canNarrowTo(nextQuery) {
+		// Appending text can only remove matches, so rank the current result set
+		// when no scan entries arrived since the last applied query.
 		m.appliedQuery = nextQuery
 		m.queryDirty = false
 		m.fullMatches = rankMatchesWithOptions(m.fullMatches, m.appliedQuery, m.fallbackSort, m.caseSensitive)
@@ -225,6 +229,8 @@ func (m *pickerModel) rankCandidates(query string) []Match {
 }
 
 func (m *pickerModel) canAppendUnrankedMatches() bool {
+	// Empty path-sort results are already in scan order, so a fresh scan batch
+	// can be appended without reranking the whole list.
 	return m.appliedQuery == "" &&
 		m.fallbackSort != SortMTime &&
 		m.matchedEntriesVersion+1 == m.entriesVersion
@@ -245,6 +251,8 @@ func (m *pickerModel) sortCurrentMatchesNewest() {
 	if m.mtimeCache == nil {
 		m.mtimeCache = make(map[string]int64, len(m.matches))
 	}
+	// The initial scan may omit mtimes for path-sorted interactive mode; fetch
+	// file mtimes lazily only for the visible user request to sort by recency.
 	for i := range m.matches {
 		if m.matches[i].Entry.Type != TypeDir {
 			m.matches[i].Entry.ModTimeNS = m.cachedModTimeNS(m.matches[i].Entry)
@@ -298,6 +306,8 @@ func effectiveMatches(matches []Match, query string) []Match {
 	if len(plan.specs) < 2 || len(matches) <= effectiveStrongWindowMatches {
 		return matches
 	}
+	// Multi-token queries can produce many weak fuzzy matches. Limit the
+	// rendered working set once the top results are strong enough to be useful.
 	if hasStrongTopMatches(matches, len(plan.specs)) {
 		return matches[:effectiveStrongWindowMatches]
 	}
@@ -413,6 +423,8 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 
 	preparePicker(stderr)
 	fmt.Fprint(stderr, "\x1b[?25l")
+	// Always restore terminal state and cursor visibility, even when picking is
+	// canceled or a scan error aborts the loop.
 	defer term.Restore(inFD, oldState)
 	defer fmt.Fprint(stderr, "\x1b[?25h\x1b[0m")
 
@@ -421,6 +433,8 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	if err != nil {
 		return err
 	}
+	// Restore raw mode before printing the selected path so command
+	// substitution receives plain text and the shell prompt is usable again.
 	if err := term.Restore(inFD, oldState); err != nil {
 		return err
 	}
@@ -539,6 +553,8 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 	}
 	defer cancelActiveQuery()
 	applyQueryResult := func(result queryJobResult) bool {
+		// Query workers race with typing and scanning; accept only the result
+		// that still matches the current query and entry snapshot.
 		if result.id != activeQueryID || result.query != string(model.query) || result.entriesVersion != model.entriesVersion {
 			return false
 		}
@@ -598,6 +614,8 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			model.applyQuery()
 			return false
 		}
+		// Large rankings run asynchronously so key handling and scan rendering
+		// stay responsive while scoring works through the candidate set.
 		queryJobID++
 		jobID := queryJobID
 		jobCtx, cancel := context.WithCancel(ctx)
@@ -672,6 +690,8 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			return false
 		}
 		hadQueryWork := model.queryDirty || activeQueryID != 0
+		// Scan results are batched between renders; adding a batch invalidates
+		// any in-flight ranking tied to the previous entriesVersion.
 		cancelActiveQuery()
 		model.addEntries(pending)
 		pending = nil
@@ -772,6 +792,8 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 				model.move(-1)
 			case keyEnter:
 				if applyPendingQuery(true) {
+					// Enter should select the result for the text currently on
+					// screen, so remember it until async filtering catches up.
 					if pendingAction == pendingQuerySortRecent {
 						pendingAction = pendingQuerySortRecentEnter
 					} else {
@@ -787,6 +809,8 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 				return entry, nil
 			case keySortRecent:
 				if applyPendingQuery(true) {
+					// Ctrl-N after a dirty query means "filter first, then sort
+					// the resulting matches by recency."
 					pendingAction = pendingQuerySortRecent
 					renderer.renderFull()
 					continue
@@ -962,6 +986,8 @@ func terminalWidth(fd int) int {
 }
 
 func preparePicker(w io.Writer) {
+	// Reserve a small fixed area below the shell prompt and save the cursor at
+	// its top; rendering restores to that anchor instead of using alt-screen.
 	for i := 0; i < pickerReservedLines; i++ {
 		fmt.Fprint(w, "\r\n")
 	}
@@ -969,6 +995,8 @@ func preparePicker(w io.Writer) {
 }
 
 func clearPicker(w io.Writer) {
+	// Return to the saved anchor and clear only the lines fzr reserved, leaving
+	// the rest of the terminal scrollback untouched.
 	fmt.Fprint(w, "\x1b8")
 	for i := 0; i < pickerReservedLines; i++ {
 		fmt.Fprint(w, "\x1b[2K")
@@ -996,6 +1024,8 @@ func renderPicker(w io.Writer, m *pickerModel, width int, theme pickerTheme) {
 }
 
 func renderPickerPrompt(w io.Writer, m *pickerModel, width int, theme pickerTheme) {
+	// Cursor movement in the query can redraw just the prompt line; scan and
+	// ranking changes still use the full reserved area.
 	fmt.Fprint(w, "\x1b8")
 	prompt, cursor := m.promptLineAndCursor()
 	writePromptLine(w, prompt, cursor, width, theme)
@@ -1175,6 +1205,8 @@ func writePromptLine(w io.Writer, text string, cursorPosition int, width int, th
 	if width > 0 {
 		trimWidth := width
 		if cursorPosition >= len([]rune(text)) {
+			// Keep one cell available for the highlighted cursor when it sits at
+			// end-of-line; otherwise terminals may wrap the prompt.
 			trimWidth = width - 1
 		}
 		text, cursorPosition = trimRunesAroundCursor(text, cursorPosition, trimWidth)
@@ -1237,6 +1269,8 @@ func trimRunesAroundCursor(text string, cursorPosition int, width int) (string, 
 	}
 
 	contentWidth := width - 3
+	// For long prompts, bias the window toward the cursor and mark hidden left
+	// context with an ellipsis.
 	start := cursorPosition - contentWidth
 	if start < 0 {
 		start = 0

@@ -102,6 +102,8 @@ func mustParseMatchStyle(value string) matchStyle {
 
 func matchStyleANSI(style matchStyle) (string, string) {
 	if style.plain {
+		// Plain disables only match styling; selection and status resets still
+		// come from the surrounding picker theme.
 		return "", ""
 	}
 	var start, reset strings.Builder
@@ -142,6 +144,8 @@ func shouldUsePickerColorEnv(isTTY bool, getenv func(string) string) bool {
 	if !isTTY {
 		return false
 	}
+	// The picker uses dim and underline in addition to basic color, so require
+	// a terminal signal that 256-color-style escapes are likely to render well.
 	return supports256ColorEnv(getenv)
 }
 

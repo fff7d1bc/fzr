@@ -70,6 +70,8 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 			if len(batch) == 0 {
 				return nil
 			}
+			// Send immutable batches so the picker can render progressively
+			// without a channel send for every filesystem entry.
 			entries := make([]Entry, len(batch))
 			copy(entries, batch)
 			batch = batch[:0]
@@ -92,6 +94,8 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 				Type: entryType,
 			}
 			if opts.NeedModTime {
+				// Mtime is only paid for when sorting needs it; in follow-link
+				// mode Stat keeps the displayed type and timestamp aligned.
 				info, err := scanEntryInfo(path, dirent, opts.FollowLinks)
 				if err != nil {
 					if skippableScanError(err) {
@@ -155,6 +159,8 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 }
 
 func skippableScanError(err error) bool {
+	// Files can disappear or become unreadable while the tree is being scanned.
+	// Treat those races like shells and find(1) usually do: skip and continue.
 	return errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)
 }
 
@@ -164,6 +170,8 @@ func ignoredDir(ignored map[string]struct{}, name string) bool {
 }
 
 func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
+	// filepath.WalkDir does not follow directory symlinks, so follow-link mode
+	// keeps a realpath ancestor set per branch to avoid symlink cycles.
 	ancestors := make(map[string]struct{})
 	rootRealPath, err := filepath.EvalSymlinks(root)
 	if err != nil && !skippableScanError(err) {
@@ -224,6 +232,8 @@ func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]str
 }
 
 func followedEntryType(path string, dirent fs.DirEntry) (EntryType, bool, error) {
+	// Follow-link mode reports the target kind, so a symlink to a directory can
+	// be displayed and traversed as a directory.
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, false, err
@@ -249,6 +259,8 @@ func descendSymlinkAware(ancestors map[string]struct{}, path string) (map[string
 	if _, ok := ancestors[realPath]; ok {
 		return ancestors, true, nil
 	}
+	// Copy on descent so sibling branches do not incorrectly block each other
+	// when they point at the same directory through different paths.
 	next := make(map[string]struct{}, len(ancestors)+1)
 	for ancestor := range ancestors {
 		next[ancestor] = struct{}{}
@@ -323,6 +335,8 @@ func typeAllowed(entryType EntryType, filter TypeFilter) bool {
 func sortEntries(entries []Entry, mode SortMode) {
 	switch mode {
 	case SortMTime:
+		// Non-interactive mtime sort is oldest-first for stable pipeline use;
+		// the interactive Ctrl-N recent sort is the newest-first view.
 		sort.SliceStable(entries, func(i, j int) bool {
 			if entries[i].ModTimeNS == entries[j].ModTimeNS {
 				return entries[i].Path < entries[j].Path

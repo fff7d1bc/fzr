@@ -9,6 +9,8 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
     local -a split_reply dir_matches
 
     zle -I
+    # Clear generic zle suffix display state before changing LBUFFER so wrapper
+    # widgets cannot leave stale prompt text after fzr returns.
     POSTDISPLAY=
     fzr_status=0
 
@@ -16,6 +18,7 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
     append_search_slash=''
     if [[ -n "${LBUFFER}" ]]; then
         local reply REPLY
+        # Let zsh parse the buffer instead of guessing at quoting or escapes.
         split-shell-arguments
         split_reply=( "${reply[@]}" )
         current_word="${split_reply[REPLY - 1]}"
@@ -26,6 +29,8 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
                 search_in="${path_part}"
             fi
         elif [[ -n "${path_part}" ]]; then
+            # Expand a path-like word only when it resolves to one directory;
+            # ambiguous globs should not choose a search root for the user.
             dir_matches=( ${~${(Q)path_part}}(N-/) )
             if (( ${#dir_matches} == 1 )); then
                 append_search_slash=1
@@ -45,6 +50,8 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
     else
         search_in="${dir_matches[1]}"
 
+        # Keep fzr attached to the terminal even though command substitution is
+        # capturing stdout for the selected path.
         selected_path="$(fzr -i --ignore-common -- "${search_in}" </dev/tty)"
         fzr_status=$?
         if (( fzr_status == 0 )) && [[ -d "${search_in}/${selected_path}" ]]; then
@@ -65,6 +72,8 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
     return "${fzr_status}"
 }
 
+# Use a normal public widget name so other zle wrappers can treat this as a
+# regular buffer-modifying widget.
 zle -N fzr-append-path-to-buffer
 bindkey "^F" fzr-append-path-to-buffer
 `
