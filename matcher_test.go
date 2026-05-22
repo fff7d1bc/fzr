@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -190,6 +191,46 @@ func TestRankEntriesEmptyQueryUsesFallbackSort(t *testing.T) {
 	want := []string{"a", "b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ranked paths = %#v, want %#v", got, want)
+	}
+}
+
+func TestRankEntriesEmptyQueryKeepsLexicographicPathSort(t *testing.T) {
+	entries := []Entry{
+		{Path: "show-2.mkv"},
+		{Path: "show-10.mkv"},
+	}
+
+	matches := rankEntries(entries, "", SortPath)
+	got := matchPaths(matches)
+	want := []string{"show-10.mkv", "show-2.mkv"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want lexicographic order %#v", got, want)
+	}
+}
+
+func TestNaturalPathCompareOrdersNumericRunsByValue(t *testing.T) {
+	paths := []string{
+		"show-10.mkv",
+		"show-07.mkv",
+		"show-06v2.mkv",
+		"show-06.mkv",
+		"show-2.mkv",
+		"show-alpha.mkv",
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		return naturalPathLess(paths[i], paths[j])
+	})
+
+	want := []string{
+		"show-2.mkv",
+		"show-06.mkv",
+		"show-06v2.mkv",
+		"show-07.mkv",
+		"show-10.mkv",
+		"show-alpha.mkv",
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("natural paths = %#v, want %#v", paths, want)
 	}
 }
 
@@ -468,6 +509,69 @@ func TestRankEntriesPrefersEpisodeNumberForGluedNumericSuffixWithoutQualityToken
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ranked paths = %#v, want episode 10 first %#v", got, want)
+	}
+}
+
+func TestRankEntriesUsesNaturalPathOrderForNearTieEpisodeVersions(t *testing.T) {
+	entries := []Entry{
+		{Path: haibaraEpisodePath("01")},
+		{Path: haibaraEpisodePath("02")},
+		{Path: haibaraEpisodePath("03")},
+		{Path: haibaraEpisodePath("04")},
+		{Path: haibaraEpisodePath("05")},
+		{Path: haibaraEpisodePath("07")},
+		{Path: haibaraEpisodePath("08")},
+		{Path: haibaraEpisodePath("06v2")},
+		{Path: haibaraEpisodePath("06")},
+	}
+
+	matches := rankEntries(entries, "haibarahun", SortPath)
+	got := matchPaths(matches)
+	want := []string{
+		haibaraEpisodePath("01"),
+		haibaraEpisodePath("02"),
+		haibaraEpisodePath("03"),
+		haibaraEpisodePath("04"),
+		haibaraEpisodePath("05"),
+		haibaraEpisodePath("06"),
+		haibaraEpisodePath("06v2"),
+		haibaraEpisodePath("07"),
+		haibaraEpisodePath("08"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want natural episode order %#v", got, want)
+	}
+}
+
+func TestRankEntriesKeepsScorePriorityOutsideNaturalNearTie(t *testing.T) {
+	entries := []Entry{
+		{Path: haibaraEpisodePath("07")},
+		{Path: haibaraEpisodePath("06vvvvvvvv")},
+	}
+
+	matches := rankEntries(entries, "haibarahun", SortPath)
+	got := matchPaths(matches)
+	want := []string{
+		haibaraEpisodePath("07"),
+		haibaraEpisodePath("06vvvvvvvv"),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want score gap to beat natural order %#v", got, want)
+	}
+}
+
+func TestSortNaturalPathNearTieBucketsUsesFixedBestScoreAnchor(t *testing.T) {
+	matches := []rankedMatch{
+		{Match: Match{Entry: Entry{Path: "episode-03.mkv"}, Score: 91}},
+		{Match: Match{Entry: Entry{Path: "episode-02.mkv"}, Score: 85}},
+		{Match: Match{Entry: Entry{Path: "episode-01.mkv"}, Score: 80}},
+	}
+
+	sortNaturalPathNearTieBuckets(matches)
+	got := matchPaths([]Match{matches[0].Match, matches[1].Match, matches[2].Match})
+	want := []string{"episode-02.mkv", "episode-03.mkv", "episode-01.mkv"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bucketed paths = %#v, want fixed-anchor near-tie order %#v", got, want)
 	}
 }
 
@@ -883,4 +987,8 @@ func matchPaths(matches []Match) []string {
 		paths[i] = match.Entry.Path
 	}
 	return paths
+}
+
+func haibaraEpisodePath(episode string) string {
+	return "[SubsPlease] Haibara-kun no Tsuyokute Seishun New Game - " + episode + " (1080p) [E931DD98].mkv"
 }

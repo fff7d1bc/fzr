@@ -7,6 +7,10 @@ import (
 	"unicode"
 )
 
+// Natural ordering only breaks tiny fuzzy-score ties, such as an episode suffix
+// "06v2" paying one extra trailing-gap unit compared with "07".
+const naturalPathNearTieScoreDelta = 10
+
 type Match struct {
 	Entry           Entry
 	Score           int
@@ -121,11 +125,48 @@ func sortedMatches(matches []rankedMatch) []Match {
 		}
 		return matches[i].Entry.Path < matches[j].Entry.Path
 	})
+	sortNaturalPathNearTieBuckets(matches)
 	out := make([]Match, len(matches))
 	for i, match := range matches {
 		out[i] = match.Match
 	}
 	return out
+}
+
+func sortNaturalPathNearTieBuckets(matches []rankedMatch) {
+	for start := 0; start < len(matches); {
+		end := start + 1
+		best := matches[start]
+		for end < len(matches) && naturalPathNearTieBucketMember(best, matches[end]) {
+			end++
+		}
+		if naturalPathBucketHasNumericDifference(matches[start:end]) {
+			sort.SliceStable(matches[start:end], func(i, j int) bool {
+				return naturalPathLess(matches[start+i].Entry.Path, matches[start+j].Entry.Path)
+			})
+		}
+		start = end
+	}
+}
+
+func naturalPathNearTieBucketMember(best, match rankedMatch) bool {
+	return best.fuzzyCount == match.fuzzyCount &&
+		best.substringCount == match.substringCount &&
+		best.disjointQuality == match.disjointQuality &&
+		best.disjointCount == match.disjointCount &&
+		best.disjointEnd == match.disjointEnd &&
+		best.matchSpan == match.matchSpan &&
+		best.matchOffset == match.matchOffset &&
+		best.Score-match.Score <= naturalPathNearTieScoreDelta
+}
+
+func naturalPathBucketHasNumericDifference(matches []rankedMatch) bool {
+	for i := 1; i < len(matches); i++ {
+		if _, numeric := naturalPathCompareNumeric(matches[0].Entry.Path, matches[i].Entry.Path); numeric {
+			return true
+		}
+	}
+	return false
 }
 
 type rankedMatch struct {
@@ -1298,6 +1339,86 @@ func asciiLower(b byte) byte {
 		return b + ('a' - 'A')
 	}
 	return b
+}
+
+func naturalPathLess(a, b string) bool {
+	return naturalPathCompare(a, b) < 0
+}
+
+func naturalPathCompare(a, b string) int {
+	cmp, _ := naturalPathCompareNumeric(a, b)
+	return cmp
+}
+
+func naturalPathCompareNumeric(a, b string) (int, bool) {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if isDigit(a[i]) && isDigit(b[j]) {
+			nextI, nextJ := digitRunEnd(a, i), digitRunEnd(b, j)
+			if cmp := compareDigitRuns(a[i:nextI], b[j:nextJ]); cmp != 0 {
+				return cmp, true
+			}
+			i, j = nextI, nextJ
+			continue
+		}
+		if a[i] != b[j] {
+			if a[i] < b[j] {
+				return -1, false
+			}
+			return 1, false
+		}
+		i++
+		j++
+	}
+	switch {
+	case i < len(a):
+		return 1, false
+	case j < len(b):
+		return -1, false
+	default:
+		return 0, false
+	}
+}
+
+func digitRunEnd(s string, start int) int {
+	for start < len(s) && isDigit(s[start]) {
+		start++
+	}
+	return start
+}
+
+func compareDigitRuns(a, b string) int {
+	trimmedA := strings.TrimLeft(a, "0")
+	trimmedB := strings.TrimLeft(b, "0")
+	if trimmedA == "" {
+		trimmedA = "0"
+	}
+	if trimmedB == "" {
+		trimmedB = "0"
+	}
+	if len(trimmedA) != len(trimmedB) {
+		if len(trimmedA) < len(trimmedB) {
+			return -1
+		}
+		return 1
+	}
+	if trimmedA != trimmedB {
+		if trimmedA < trimmedB {
+			return -1
+		}
+		return 1
+	}
+	if len(a) != len(b) {
+		if len(a) < len(b) {
+			return -1
+		}
+		return 1
+	}
+	return 0
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 func isAlphaNumRune(r rune) bool {
