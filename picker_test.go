@@ -345,6 +345,22 @@ func TestPickerModelExtendingQueryNarrowsExistingMatches(t *testing.T) {
 	}
 }
 
+func TestPickerModelDottedNumericVersionStaysReachableWhileTyping(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.addEntries(steamDeckImageEntries())
+
+	for _, r := range "385" {
+		model.appendRune(r)
+		model.applyQuery()
+	}
+
+	got := matchPaths(model.matches)
+	want := []string{"steamdeck-20260520.100-3.8.5.img"}
+	if !equalStrings(got, want) {
+		t.Fatalf("matches after incremental 385 = %#v, want %#v", got, want)
+	}
+}
+
 func TestPickerModelAppendingSpaceTokenNarrowsExistingMatches(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.addEntry(Entry{Path: "fixtures/alpha/beta/item.dat"})

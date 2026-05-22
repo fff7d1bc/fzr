@@ -439,7 +439,12 @@ func scorePathRunesWithNumeric(pathRunes, queryRunes []rune, numeric bool, caseS
 	}
 	if numeric {
 		// Do not fuzzy-match digits; "12" should not match a path containing
-		// unrelated "1" and "2" fragments.
+		// unrelated "1" and "2" fragments. The dotted-version exception stays
+		// bounded to one numeric run such as "3.8.5" so dates, hashes, and other
+		// digit groups do not become accidental matches.
+		if token, _, ok := scoreDottedNumericRunesFrom(pathRunes, queryRunes, 0); ok {
+			return token, true
+		}
 		return tokenScore{}, false
 	}
 	score, span, offset, ok := scoreFzyRunes(pathRunes, queryRunes, caseSensitive)
@@ -469,7 +474,11 @@ func scorePathASCIIWithNumeric(path, query string, numeric bool, caseSensitive b
 	}
 	if numeric {
 		// Keep numeric matching stricter than ordinary text for predictable
-		// ordering of versioned and numbered paths.
+		// ordering of versioned and numbered paths. Dotted versions are the one
+		// weak fallback because users often omit separators in queries.
+		if token, _, ok := scoreDottedNumericASCIIFrom(path, query, 0); ok {
+			return token, true
+		}
 		return tokenScore{}, false
 	}
 	score, span, offset, ok := scoreFzyASCII(path, query, caseSensitive)
@@ -496,6 +505,13 @@ func scoreDisjointRunes(pathRunes []rune, plan queryPlan, caseSensitive bool) (i
 			continue
 		}
 		if query.numeric {
+			if token, positions, ok := scoreDottedNumericRunesFrom(pathRunes, query.runes, cursor); ok {
+				score += token.score
+				cursor = positions[len(positions)-1] + 1
+				quality += disjointFuzzyMatchQuality
+				count++
+				continue
+			}
 			return score, count, cursor, quality, false
 		}
 		tokenScore, end, ok := scoreDisjointFuzzyRunesFrom(pathRunes, query.runes, cursor, caseSensitive)
@@ -527,6 +543,13 @@ func scoreDisjointASCII(path string, plan queryPlan, caseSensitive bool) (int, i
 			continue
 		}
 		if query.numeric {
+			if token, positions, ok := scoreDottedNumericASCIIFrom(path, query.text, cursor); ok {
+				score += token.score
+				cursor = positions[len(positions)-1] + 1
+				quality += disjointFuzzyMatchQuality
+				count++
+				continue
+			}
 			return score, count, cursor, quality, false
 		}
 		tokenScore, end, ok := scoreDisjointFuzzyASCIIFrom(path, query.text, cursor, caseSensitive)
@@ -709,6 +732,201 @@ func scoreDisjointFuzzyASCIIFrom(path, query string, start int, caseSensitive bo
 	return score, last + 1, true
 }
 
+// A dotted numeric fallback treats "3.8.5" as a single version-shaped run whose
+// digits can be typed as "385". It matches typed prefixes of that run too, so
+// interactive narrowing keeps the candidate alive while the user is still typing.
+func scoreDottedNumericRunesFrom(pathRunes, queryRunes []rune, startAt int) (tokenScore, []int, bool) {
+	if len(queryRunes) < 2 {
+		return tokenScore{}, nil, false
+	}
+	if startAt < 0 {
+		startAt = 0
+	}
+	var best tokenScore
+	var bestPositions []int
+	for start := startAt; start < len(pathRunes); start++ {
+		if !isASCIIDigitRune(pathRunes[start]) || !dottedNumericStartBoundary(pathRunes, start) {
+			continue
+		}
+		positions, matchEnd, runEnd, ok := dottedNumericRunesAt(pathRunes, queryRunes, start)
+		if !ok || !dottedNumericEndBoundary(pathRunes, runEnd) {
+			continue
+		}
+		token := tokenScore{
+			score:  scoreDottedNumericPositions(pathRunes, positions, startAt, runEnd-matchEnd),
+			span:   runEnd - start,
+			offset: componentOffsetRunes(pathRunes, start),
+		}
+		if bestPositions == nil || betterDottedNumericToken(token, best) {
+			best = token
+			bestPositions = positions
+		}
+	}
+	if bestPositions == nil {
+		return tokenScore{}, nil, false
+	}
+	return best, bestPositions, true
+}
+
+func scoreDottedNumericASCIIFrom(path, query string, startAt int) (tokenScore, []int, bool) {
+	if len(query) < 2 {
+		return tokenScore{}, nil, false
+	}
+	if startAt < 0 {
+		startAt = 0
+	}
+	var best tokenScore
+	var bestPositions []int
+	for start := startAt; start < len(path); start++ {
+		if !isDigit(path[start]) || !dottedNumericStartBoundaryASCII(path, start) {
+			continue
+		}
+		positions, matchEnd, runEnd, ok := dottedNumericASCIIAt(path, query, start)
+		if !ok || !dottedNumericEndBoundaryASCII(path, runEnd) {
+			continue
+		}
+		token := tokenScore{
+			score:  scoreDottedNumericPositionsASCII(path, positions, startAt, runEnd-matchEnd),
+			span:   runEnd - start,
+			offset: componentOffsetASCII(path, start),
+		}
+		if bestPositions == nil || betterDottedNumericToken(token, best) {
+			best = token
+			bestPositions = positions
+		}
+	}
+	if bestPositions == nil {
+		return tokenScore{}, nil, false
+	}
+	return best, bestPositions, true
+}
+
+func betterDottedNumericToken(candidate, best tokenScore) bool {
+	if candidate.score != best.score {
+		return candidate.score > best.score
+	}
+	if candidate.span != best.span {
+		return candidate.span < best.span
+	}
+	return candidate.offset < best.offset
+}
+
+func dottedNumericRunesAt(pathRunes, queryRunes []rune, start int) ([]int, int, int, bool) {
+	positions := make([]int, 0, len(queryRunes))
+	queryIdx := 0
+	dotCount := 0
+	matchEnd := 0
+	runEnd := start
+	for idx := start; idx < len(pathRunes); idx++ {
+		r := pathRunes[idx]
+		if isASCIIDigitRune(r) {
+			if queryIdx < len(queryRunes) {
+				if r != queryRunes[queryIdx] {
+					return nil, idx, idx, false
+				}
+				positions = append(positions, idx)
+				queryIdx++
+				matchEnd = idx + 1
+			}
+			runEnd = idx + 1
+			continue
+		}
+		if r != '.' || idx+1 >= len(pathRunes) || !isASCIIDigitRune(pathRunes[idx+1]) {
+			break
+		}
+		dotCount++
+		runEnd = idx + 1
+	}
+	return positions, matchEnd, runEnd, dotCount > 0 && queryIdx == len(queryRunes)
+}
+
+func dottedNumericASCIIAt(path, query string, start int) ([]int, int, int, bool) {
+	positions := make([]int, 0, len(query))
+	queryIdx := 0
+	dotCount := 0
+	matchEnd := 0
+	runEnd := start
+	for idx := start; idx < len(path); idx++ {
+		b := path[idx]
+		if isDigit(b) {
+			if queryIdx < len(query) {
+				if b != query[queryIdx] {
+					return nil, idx, idx, false
+				}
+				positions = append(positions, idx)
+				queryIdx++
+				matchEnd = idx + 1
+			}
+			runEnd = idx + 1
+			continue
+		}
+		if b != '.' || idx+1 >= len(path) || !isDigit(path[idx+1]) {
+			break
+		}
+		dotCount++
+		runEnd = idx + 1
+	}
+	return positions, matchEnd, runEnd, dotCount > 0 && queryIdx == len(query)
+}
+
+func dottedNumericStartBoundary(pathRunes []rune, start int) bool {
+	if start == 0 {
+		return true
+	}
+	if isAlphaNumRune(pathRunes[start-1]) {
+		return false
+	}
+	return pathRunes[start-1] != '.' || start == 1 || !isASCIIDigitRune(pathRunes[start-2])
+}
+
+func dottedNumericStartBoundaryASCII(path string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	if isAlphaNumASCII(path[start-1]) {
+		return false
+	}
+	return path[start-1] != '.' || start == 1 || !isDigit(path[start-2])
+}
+
+func dottedNumericEndBoundary(pathRunes []rune, end int) bool {
+	if end >= len(pathRunes) {
+		return true
+	}
+	if isAlphaNumRune(pathRunes[end]) {
+		return false
+	}
+	return pathRunes[end] != '.' || end+1 >= len(pathRunes) || !isASCIIDigitRune(pathRunes[end+1])
+}
+
+func dottedNumericEndBoundaryASCII(path string, end int) bool {
+	if end >= len(path) {
+		return true
+	}
+	if isAlphaNumASCII(path[end]) {
+		return false
+	}
+	return path[end] != '.' || end+1 >= len(path) || !isDigit(path[end+1])
+}
+
+func scoreDottedNumericPositions(pathRunes []rune, positions []int, cursor int, unmatchedTail int) int {
+	score := scoreDisjointPositions(pathRunes, positions, cursor)
+	for i := 1; i < len(positions); i++ {
+		score -= positions[i] - positions[i-1] - 1
+	}
+	score -= unmatchedTail
+	return score
+}
+
+func scoreDottedNumericPositionsASCII(path string, positions []int, cursor int, unmatchedTail int) int {
+	score := scoreDisjointPositionsASCII(path, positions, cursor)
+	for i := 1; i < len(positions); i++ {
+		score -= positions[i] - positions[i-1] - 1
+	}
+	score -= unmatchedTail
+	return score
+}
+
 func matchPositions(path, query string) ([]int, bool) {
 	return matchPositionsWithCase(path, query, false)
 }
@@ -827,6 +1045,9 @@ func tokenPositionsFrom(pathRunes []rune, query querySpec, start int, caseSensit
 		return contiguousPositions(matchStart, len(query.runes)), matchStart + len(query.runes), true
 	}
 	if query.numeric {
+		if _, positions, ok := scoreDottedNumericRunesFrom(pathRunes, query.runes, start); ok {
+			return positions, positions[len(positions)-1] + 1, true
+		}
 		return nil, start, false
 	}
 	positions, ok := fzyPositionsFrom(pathRunes, query.runes, start, caseSensitive)
@@ -1254,6 +1475,25 @@ func scoreDisjointPositions(pathRunes []rune, positions []int, cursor int) int {
 	return score
 }
 
+func scoreDisjointPositionsASCII(path string, positions []int, cursor int) int {
+	score, last := 0, -1
+	for _, idx := range positions {
+		score += 10 + positionBonusASCII(path, idx)
+		if last >= 0 {
+			gap := idx - last - 1
+			if gap == 0 {
+				score += 15
+			} else {
+				score -= gap
+			}
+		} else {
+			score -= idx - cursor
+		}
+		last = idx
+	}
+	return score
+}
+
 func scoreContiguousRun(pathRunes []rune, start, length int) int {
 	score, last := 0, -1
 	for idx := start; idx < start+length; idx++ {
@@ -1419,6 +1659,10 @@ func compareDigitRuns(a, b string) int {
 
 func isDigit(b byte) bool {
 	return b >= '0' && b <= '9'
+}
+
+func isASCIIDigitRune(r rune) bool {
+	return r >= '0' && r <= '9'
 }
 
 func isAlphaNumRune(r rune) bool {

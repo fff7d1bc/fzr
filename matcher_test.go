@@ -586,6 +586,114 @@ func TestRankEntriesRejectsScatteredNumericToken(t *testing.T) {
 	}
 }
 
+func TestRankEntriesMatchesDottedNumericVersionToken(t *testing.T) {
+	entries := steamDeckImageEntries()
+
+	tests := []struct {
+		query string
+		want  string
+	}{
+		{"381", "steamdeck-20260327.100-3.8.1.img"},
+		{"384", "steamdeck-20260507.100-3.8.4.img"},
+		{"385", "steamdeck-20260520.100-3.8.5.img"},
+		{"390", "steamdeck-20260511.1000-3.9.0.img"},
+	}
+
+	for _, tt := range tests {
+		matches := rankEntries(entries, tt.query, SortPath)
+		got := matchPaths(matches)
+		want := []string{tt.want}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("query %q ranked paths = %#v, want dotted version match %#v", tt.query, got, want)
+		}
+	}
+}
+
+func TestRankEntriesMatchesDottedNumericVersionPrefixToken(t *testing.T) {
+	entries := []Entry{
+		{Path: "images/steamdeck-20260520.100-3.8.5.img"},
+		{Path: "images/steamdeck-20260508.1-3.7.24.img"},
+		{Path: "images/steamdeck-20260511.1000-3.9.0.img"},
+	}
+
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{
+			query: "38",
+			want:  []string{"images/steamdeck-20260520.100-3.8.5.img"},
+		},
+		{
+			query: "372",
+			want:  []string{"images/steamdeck-20260508.1-3.7.24.img"},
+		},
+	}
+
+	for _, tt := range tests {
+		matches := rankEntries(entries, tt.query, SortPath)
+		got := matchPaths(matches)
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("query %q ranked paths = %#v, want dotted version prefix %#v", tt.query, got, tt.want)
+		}
+	}
+}
+
+func TestRankEntriesDottedNumericVersionRejectsWrongAndScatteredDigits(t *testing.T) {
+	entries := []Entry{
+		{Path: "steamdeck-20260520.100-3.8.5.img"},
+	}
+
+	for _, query := range []string{"381", "265", "205385"} {
+		matches := rankEntries(entries, query, SortPath)
+		if len(matches) != 0 {
+			t.Fatalf("query %q matches = %#v, want none", query, matchPaths(matches))
+		}
+	}
+}
+
+func TestRankEntriesDottedNumericVersionExactRunBeatsPrefixRun(t *testing.T) {
+	entries := []Entry{
+		{Path: "images/steamdeck-3.8.50.img"},
+		{Path: "images/steamdeck-3.8.5.img"},
+	}
+
+	matches := rankEntries(entries, "385", SortPath)
+	got := matchPaths(matches)
+	want := []string{"images/steamdeck-3.8.5.img", "images/steamdeck-3.8.50.img"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want exact dotted run first %#v", got, want)
+	}
+}
+
+func TestRankEntriesDottedNumericVersionStaysWeakerThanContiguousNumber(t *testing.T) {
+	entries := []Entry{
+		{Path: "images/3.8.5.img"},
+		{Path: "images/385.img"},
+	}
+
+	matches := rankEntries(entries, "385", SortPath)
+	got := matchPaths(matches)
+	want := []string{"images/385.img", "images/3.8.5.img"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want contiguous numeric match first %#v", got, want)
+	}
+}
+
+func TestRankEntriesMatchesDottedNumericVersionInTokenQuery(t *testing.T) {
+	entries := []Entry{
+		{Path: "images/steamdeck-20260507.100-3.8.4.img"},
+		{Path: "images/steamdeck-20260520.100-3.8.5.img"},
+	}
+
+	matches := rankEntries(entries, "steamdeck 385", SortPath)
+	got := matchPaths(matches)
+	want := []string{"images/steamdeck-20260520.100-3.8.5.img"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ranked paths = %#v, want token query to match dotted version %#v", got, want)
+	}
+}
+
 func TestRankEntriesWithOptionsHonorsCaseSensitiveMode(t *testing.T) {
 	entries := []Entry{
 		{Path: "src/Foo.go"},
@@ -864,6 +972,22 @@ func TestMatchPositionsRejectsScatteredNumericToken(t *testing.T) {
 	}
 }
 
+func TestMatchPositionsHighlightsDottedNumericVersionToken(t *testing.T) {
+	path := "steamdeck-20260520.100-3.8.5.img"
+	positions, ok := matchPositions(path, "385")
+	if !ok {
+		t.Fatal("expected dotted version query to match path")
+	}
+	versionStart := strings.Index(path, "3.8.5")
+	if versionStart == -1 {
+		t.Fatal("test path missing dotted version")
+	}
+	want := []int{versionStart, versionStart + 2, versionStart + 4}
+	if !reflect.DeepEqual(positions, want) {
+		t.Fatalf("positions = %#v, want dotted version digits %#v", positions, want)
+	}
+}
+
 func TestMatchPositionsPrefersBoundedNumericSuffixInGluedQuery(t *testing.T) {
 	path := "synthetic/catalog/done/_pack/Alpha Beta S1 (BD 1080p)/Alpha Beta - 10 (BD 1080p).mkv"
 	positions, ok := matchPositions(path, "catadonealphabetas11080p10")
@@ -916,12 +1040,14 @@ func TestRankAndHighlightAcceptanceStayConsistent(t *testing.T) {
 		"fixtures/quality-1080p/item-1080p.dat",
 		"fixtures/alpha/beta/signal/alpha-beta-signal-01.dat",
 		"fixtures/a-l-p-h-a/b-e-t-a/weak-001.dat",
+		"images/steamdeck-20260520.100-3.8.5.img",
 	}
 	queries := []string{
 		"catalog done alpha beta mkv 08",
 		"catalog done alpha beta .mkv 09 86",
 		"quality 1080p 1080p",
 		"alpha beta signal .dat",
+		"steamdeck 385",
 		"AlphaBeta",
 		"Witch",
 	}
@@ -991,4 +1117,15 @@ func matchPaths(matches []Match) []string {
 
 func haibaraEpisodePath(episode string) string {
 	return "[SubsPlease] Haibara-kun no Tsuyokute Seishun New Game - " + episode + " (1080p) [E931DD98].mkv"
+}
+
+func steamDeckImageEntries() []Entry {
+	return []Entry{
+		{Path: "steamdeck-20260327.100-3.8.1.img"},
+		{Path: "steamdeck-20260507.100-3.8.4.img"},
+		{Path: "steamdeck-20260508.1-3.7.24.img"},
+		{Path: "steamdeck-20260511.1000-3.9.0.img"},
+		{Path: "steamdeck-20260520.100-3.8.5.img"},
+		{Path: "steamdeck-repair-20250521.10-3.7.7.img"},
+	}
 }

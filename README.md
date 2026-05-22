@@ -148,6 +148,8 @@ Ranking prefers
 - stronger token matches without making space-separated token order significant
 - separate occurrences for repeated words when possible
 - bounded numeric tokens such as episode `10` over `10` inside `1080p`
+- bounded dotted version fragments such as `385` matching `3.8.5`, including
+  typed prefixes such as `38`
 - bounded numeric endings in glued fuzzy queries such as `...1080p10`
 
 Example paths
@@ -189,6 +191,9 @@ abbreviation.
   filename.
 - Numeric fragments prefer bounded occurrences. This helps `10` find an episode
   or numbered file instead of the `10` inside `1080p`.
+- Numeric fragments can also weakly match one bounded dotted version run, so
+  `385` can find `3.8.5` without matching arbitrary scattered digits. Typed
+  prefixes such as `38` match too, which keeps interactive narrowing stable.
 - Glued fuzzy queries with a trailing number also prefer a bounded numeric
   ending when there is a good one.
 
