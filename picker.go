@@ -81,6 +81,12 @@ func (m *pickerModel) addEntries(entries []Entry) {
 		// spliced into that ordering until a query edit resets it.
 		return
 	}
+	if !m.queryDirty && m.appliedQuery != "" {
+		// Keep the current filtered snapshot visible while scanning continues.
+		// The event loop will schedule a fresh ranking pass for the newer
+		// entriesVersion instead of reranking synchronously on every scan batch.
+		return
+	}
 	if !m.queryDirty {
 		if m.canAppendUnrankedMatches() {
 			newMatches := matchesFromEntries(entries)
@@ -219,6 +225,17 @@ func (m *pickerModel) canNarrowTo(nextQuery string) bool {
 		nextQuery != m.appliedQuery &&
 		strings.HasPrefix(nextQuery, m.appliedQuery) &&
 		m.matchedEntriesVersion == m.entriesVersion
+}
+
+func (m *pickerModel) queryWorkPending() bool {
+	return m.queryDirty || m.querySnapshotStale()
+}
+
+func (m *pickerModel) querySnapshotStale() bool {
+	if m.recentSortActive {
+		return false
+	}
+	return string(m.query) == m.appliedQuery && m.matchedEntriesVersion != m.entriesVersion
 }
 
 func (m *pickerModel) rankCandidates(query string) []Match {
@@ -553,9 +570,10 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 	}
 	defer cancelActiveQuery()
 	applyQueryResult := func(result queryJobResult) bool {
-		// Query workers race with typing and scanning; accept only the result
-		// that still matches the current query and entry snapshot.
-		if result.id != activeQueryID || result.query != string(model.query) || result.entriesVersion != model.entriesVersion {
+		// Query workers race with typing and scanning; a result may be from an
+		// older entry snapshot, but it is still useful as long as it matches the
+		// current query text and no newer query job replaced it.
+		if result.id != activeQueryID || result.query != string(model.query) || result.entriesVersion > model.entriesVersion {
 			return false
 		}
 		cancelQuery = nil
@@ -599,7 +617,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		return Entry{}, false, nil
 	}
 	startQueryJob := func(forceAsync bool) bool {
-		if !model.queryDirty {
+		if !model.queryWorkPending() {
 			return false
 		}
 		stopQueryTimer()
@@ -650,8 +668,15 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		}()
 		return true
 	}
-	startQueryTimer := func() bool {
-		cancelActiveQuery()
+	startQueryTimer := func(cancelExisting bool) bool {
+		if cancelExisting {
+			cancelActiveQuery()
+		} else if activeQueryID != 0 {
+			return false
+		}
+		if !model.queryWorkPending() {
+			return false
+		}
 		nextQuery := string(model.query)
 		delay := model.queryDebounceDelayFor(nextQuery)
 		if queryDebounce != nil {
@@ -689,13 +714,13 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		if len(pending) == 0 {
 			return false
 		}
-		hadQueryWork := model.queryDirty || activeQueryID != 0
-		// Scan results are batched between renders; adding a batch invalidates
-		// any in-flight ranking tied to the previous entriesVersion.
-		cancelActiveQuery()
+		hadActiveQuery := activeQueryID != 0
+		// Scan results are batched between renders. When a query worker is
+		// already ranking an older snapshot, let it finish so the user still gets
+		// a filtered view before a follow-up pass covers newer entries.
 		model.addEntries(pending)
 		pending = nil
-		return hadQueryWork && model.queryDirty
+		return !hadActiveQuery && model.queryWorkPending()
 	}
 	renderer.renderFull()
 	for {
@@ -717,7 +742,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 				restartQuery = flushPending() || restartQuery
 				if restartQuery {
 					renderer.renderFull()
-					startQueryTimer()
+					startQueryTimer(false)
 				} else {
 					renderer.renderFull()
 				}
@@ -729,7 +754,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			if len(pending) > 0 {
 				if flushPending() {
 					renderer.renderFull()
-					startQueryTimer()
+					startQueryTimer(false)
 				} else {
 					renderer.renderFull()
 				}
@@ -746,6 +771,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 					return entry, err
 				}
 				renderer.renderFull()
+				startQueryTimer(false)
 			}
 		case key, ok := <-keyCh:
 			if !ok {
@@ -773,13 +799,13 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			switch key.kind {
 			case keyRune:
 				model.appendRune(key.r)
-				rendered = startQueryTimer()
+				rendered = startQueryTimer(true)
 			case keyBackspace:
 				model.backspace()
-				rendered = startQueryTimer()
+				rendered = startQueryTimer(true)
 			case keyClearQuery:
 				model.clearQuery()
-				rendered = startQueryTimer()
+				rendered = startQueryTimer(true)
 			case keyDown:
 				if applyPendingQuery(false) {
 					rendered = true

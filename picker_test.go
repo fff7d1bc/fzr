@@ -1219,6 +1219,169 @@ func TestPickEntryKeepsPromptResponsiveDuringAsyncFiltering(t *testing.T) {
 	}
 }
 
+func TestPickEntryAcceptsSnapshotFilterWhileScanAdvances(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = true
+	model.entries = largeCandidateEntries()
+	model.entriesVersion = 1
+	model.refresh()
+	scanCh := make(chan ScanResult)
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 10)
+	release := make(chan []Match)
+	canceled := make(chan string, 10)
+	snapshots := make(chan pickerSnapshot, 20)
+	ranker := blockingTestRanker(started, release, canceled)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, snapshotRenderer(model, snapshots), 0, fixedQueryDebounce(time.Millisecond), ranker)
+		done <- err
+	}()
+
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 1
+	})
+	keyCh <- keyEvent{kind: keyRune, r: 'b'}
+	job := waitForQueryJob(t, started)
+	if job.query != "b" || job.entriesVersion != 1 {
+		t.Fatalf("job = query %q version %d, want b/version 1", job.query, job.entriesVersion)
+	}
+
+	scanCh <- ScanResult{Entries: []Entry{{Path: "beacon.txt", Type: TypeFile}}}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 2
+	})
+	select {
+	case query := <-canceled:
+		t.Fatalf("query %q was canceled by scan flush", query)
+	default:
+	}
+
+	release <- []Match{{Entry: Entry{Path: "beta.txt", Type: TypeFile}}}
+	snapshot := waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.applied == "b" &&
+			snapshot.matchedEntriesVersion == 1 &&
+			snapshot.entriesVersion == 2 &&
+			equalStrings(snapshot.paths, []string{"beta.txt"})
+	})
+	if snapshot.dirty {
+		t.Fatal("accepted current-query snapshot left query dirty")
+	}
+
+	job = waitForQueryJob(t, started)
+	if job.query != "b" || job.entriesVersion != 2 {
+		t.Fatalf("follow-up job = query %q version %d, want b/version 2", job.query, job.entriesVersion)
+	}
+
+	keyCh <- keyEvent{kind: keyCancel}
+	if err := <-done; err != errPickerCanceled {
+		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
+	}
+}
+
+func TestPickEntryEnterSelectsVisibleSnapshotWhileScanRefreshPending(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = true
+	model.entries = largeCandidateEntries()
+	model.entriesVersion = 1
+	model.refresh()
+	scanCh := make(chan ScanResult)
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 10)
+	release := make(chan []Match)
+	canceled := make(chan string, 10)
+	snapshots := make(chan pickerSnapshot, 20)
+	ranker := blockingTestRanker(started, release, canceled)
+	debounceCalls := 0
+	debounce := func(*pickerModel) time.Duration {
+		debounceCalls++
+		if debounceCalls == 1 {
+			return time.Millisecond
+		}
+		return time.Hour
+	}
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, snapshotRenderer(model, snapshots), 0, debounce, ranker)
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 1
+	})
+	keyCh <- keyEvent{kind: keyRune, r: 'b'}
+	waitForQueryJob(t, started)
+	scanCh <- ScanResult{Entries: []Entry{{Path: "beacon.txt", Type: TypeFile}}}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 2
+	})
+	release <- []Match{{Entry: Entry{Path: "beta.txt", Type: TypeFile}}}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.applied == "b" &&
+			snapshot.matchedEntriesVersion == 1 &&
+			snapshot.entriesVersion == 2 &&
+			equalStrings(snapshot.paths, []string{"beta.txt"})
+	})
+
+	keyCh <- keyEvent{kind: keyEnter}
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "beta.txt" {
+			t.Fatalf("selected path = %q, want beta.txt", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for snapshot selection")
+	}
+}
+
+func TestPickEntryTypingCancelsActiveSnapshotFilter(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.entries = largeCandidateEntries()
+	model.entriesVersion = 1
+	model.refresh()
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 10)
+	release := make(chan []Match)
+	canceled := make(chan string, 10)
+	ranker := blockingTestRanker(started, release, canceled)
+	rendered := make(chan struct{}, 20)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, testRenderer(rendered), time.Hour, fixedQueryDebounce(time.Millisecond), ranker)
+		done <- err
+	}()
+
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keyRune, r: 'b'}
+	job := waitForQueryJob(t, started)
+	if job.query != "b" {
+		t.Fatalf("job query = %q, want b", job.query)
+	}
+	keyCh <- keyEvent{kind: keyRune, r: 'e'}
+	waitForString(t, canceled, "b")
+	job = waitForQueryJob(t, started)
+	if job.query != "be" {
+		t.Fatalf("second job query = %q, want be", job.query)
+	}
+
+	keyCh <- keyEvent{kind: keyCancel}
+	if err := <-done; err != errPickerCanceled {
+		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
+	}
+}
+
 func TestPickEntryEnterWaitsForAsyncFilteringResult(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.scanning = false
@@ -2216,6 +2379,66 @@ func waitForQueryJob(t *testing.T, jobs <-chan queryJob) queryJob {
 		t.Fatal("timed out waiting for query job")
 		return queryJob{}
 	}
+}
+
+type pickerSnapshot struct {
+	applied               string
+	dirty                 bool
+	paths                 []string
+	entriesVersion        uint64
+	matchedEntriesVersion uint64
+}
+
+func waitForPickerSnapshot(t *testing.T, snapshots <-chan pickerSnapshot, want func(pickerSnapshot) bool) pickerSnapshot {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case snapshot := <-snapshots:
+			if want(snapshot) {
+				return snapshot
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for picker snapshot")
+			return pickerSnapshot{}
+		}
+	}
+}
+
+func snapshotRenderer(model *pickerModel, snapshots chan<- pickerSnapshot) pickerRenderer {
+	return pickerRenderer{
+		full: func() {
+			snapshots <- pickerSnapshot{
+				applied:               model.appliedQuery,
+				dirty:                 model.queryDirty,
+				paths:                 matchPaths(model.matches),
+				entriesVersion:        model.entriesVersion,
+				matchedEntriesVersion: model.matchedEntriesVersion,
+			}
+		},
+	}
+}
+
+func blockingTestRanker(started chan<- queryJob, release <-chan []Match, canceled chan<- string) queryRanker {
+	return func(ctx context.Context, job queryJob) ([]Match, bool) {
+		started <- job
+		select {
+		case matches := <-release:
+			return matches, true
+		case <-ctx.Done():
+			canceled <- job.query
+			return nil, false
+		}
+	}
+}
+
+func largeCandidateEntries() []Entry {
+	entries := make([]Entry, queryDebounceImmediateThreshold+1)
+	for i := range entries {
+		entries[i] = Entry{Path: "candidate.txt", Type: TypeFile}
+	}
+	entries[0] = Entry{Path: "beta.txt", Type: TypeFile}
+	return entries
 }
 
 func fixedQueryDebounce(delay time.Duration) func(*pickerModel) time.Duration {

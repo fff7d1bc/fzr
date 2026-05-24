@@ -221,6 +221,12 @@ a slow per-character refresh. When you add text to the end of the query and no
 new scan results arrived, `fzr` narrows the existing match list instead of
 starting from every known path again.
 
+While scanning is still discovering paths, filtered results are applied from
+stable snapshots of the paths known so far. New scan batches can make that
+snapshot briefly stale, and `fzr` schedules another filtering pass instead of
+blocking the UI or reranking every batch synchronously. When scanning finishes,
+the current query is refreshed against the complete discovered set.
+
 That means a query can get cheaper as it becomes more specific. If a first
 fragment leaves a small matched list, the next appended fragment filters that
 list. Backspacing or editing earlier text falls back to a broader search because
