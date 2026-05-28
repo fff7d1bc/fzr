@@ -1,12 +1,46 @@
 package main
 
-const zshIntegrationScript = `fzr-append-path-to-buffer() {
+const zshIntegrationScript = `_fzr-path-context-for-buffer() {
     emulate -L zsh
     autoload -Uz split-shell-arguments
 
-    local search_in selected_path append_search_slash fzr_status
     local current_word path_part
     local -a split_reply dir_matches
+
+    FZR_SEARCH_IN='.'
+    FZR_APPEND_SEARCH_SLASH=''
+
+    if [[ -z "${LBUFFER}" || "${LBUFFER[-1]}" == [[:space:]] ]]; then
+        return 0
+    fi
+
+    local reply REPLY
+    # Let zsh parse the buffer instead of guessing at quoting or escapes.
+    split-shell-arguments
+    split_reply=( "${reply[@]}" )
+    current_word="${split_reply[REPLY - 1]}"
+    path_part="${current_word##*=}"
+
+    if [[ "${LBUFFER[-1]}" == "/" ]]; then
+        if [[ -n "${path_part}" ]]; then
+            FZR_SEARCH_IN="${path_part}"
+        fi
+    elif [[ -n "${path_part}" ]]; then
+        # Expand a path-like word only when it resolves to one directory;
+        # ambiguous globs should not choose a search root for the user.
+        dir_matches=( ${~${(Q)path_part}}(N-/) )
+        if (( ${#dir_matches} == 1 )); then
+            FZR_APPEND_SEARCH_SLASH=1
+            FZR_SEARCH_IN="${path_part}"
+        fi
+    fi
+}
+
+fzr-append-path-to-buffer() {
+    emulate -L zsh
+
+    local search_in selected_path append_search_slash fzr_status
+    local -a dir_matches
 
     zle -I
     # Clear generic zle suffix display state before changing LBUFFER so wrapper
@@ -14,30 +48,14 @@ const zshIntegrationScript = `fzr-append-path-to-buffer() {
     POSTDISPLAY=
     fzr_status=0
 
-    search_in='.'
-    append_search_slash=''
-    if [[ -n "${LBUFFER}" ]]; then
-        local reply REPLY
-        # Let zsh parse the buffer instead of guessing at quoting or escapes.
-        split-shell-arguments
-        split_reply=( "${reply[@]}" )
-        current_word="${split_reply[REPLY - 1]}"
-        path_part="${current_word##*=}"
-
-        if [[ "${LBUFFER[-1]}" == "/" ]]; then
-            if [[ -n "${path_part}" ]]; then
-                search_in="${path_part}"
-            fi
-        elif [[ -n "${path_part}" ]]; then
-            # Expand a path-like word only when it resolves to one directory;
-            # ambiguous globs should not choose a search root for the user.
-            dir_matches=( ${~${(Q)path_part}}(N-/) )
-            if (( ${#dir_matches} == 1 )); then
-                append_search_slash=1
-                search_in="${path_part}"
-            fi
-        fi
-    fi
+    # Only a word touching the cursor is path context. split-shell-arguments
+    # reports the previous word while the cursor is in separator whitespace, but
+    # Ctrl-F there should insert another argument rather than append to the
+    # completed one.
+    local FZR_SEARCH_IN FZR_APPEND_SEARCH_SLASH
+    _fzr-path-context-for-buffer
+    search_in="${FZR_SEARCH_IN}"
+    append_search_slash="${FZR_APPEND_SEARCH_SLASH}"
 
     dir_matches=( ${~${(Q)search_in}}(N-/) )
     if (( ${#dir_matches} != 1 )); then

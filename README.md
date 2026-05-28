@@ -330,9 +330,10 @@ The widget runs `fzr -i --ignore-common`, then inserts the selected relative
 path into `LBUFFER` using zsh's `${(q)}` escaping. Paths with spaces, quotes,
 `$`, brackets, parentheses, and glob characters stay safe and editable.
 
-The generated widget also understands the current path-like word. If your
-prompt already contains a directory prefix such as `~/tmp/` or `src*/`, Ctrl-F
-searches from that directory.
+The generated widget also understands the path-like word touching the cursor.
+If your prompt already contains a directory prefix such as `~/tmp/` or `src*/`,
+Ctrl-F searches from that directory. Whitespace before the cursor starts a
+separate path insertion from the current directory.
 
 ## Build And Install
 

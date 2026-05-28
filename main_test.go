@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -236,6 +238,48 @@ func TestZshIntegrationSyntax(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("zsh -n failed: %v\n%s", err, output)
+	}
+}
+
+func TestZshIntegrationPathContextRequiresTouchingWord(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "ads1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := `zle() { :; }
+bindkey() { :; }
+` + zshIntegrationScript + `
+run_context() {
+    BUFFER="$1"
+    CURSOR="$2"
+    LBUFFER="${BUFFER[1,CURSOR]}"
+    _fzr-path-context-for-buffer
+    print -r -- "${FZR_SEARCH_IN}|${FZR_APPEND_SEARCH_SLASH}"
+}
+
+run_context 'foo --bar ads1  -- --baz' 15
+run_context 'foo --bar ads1 -- --baz' 14
+run_context 'foo --bar ads1/ -- --baz' 15
+`
+
+	cmd := exec.Command(zsh, "-f")
+	cmd.Dir = root
+	cmd.Stdin = strings.NewReader(script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("zsh path context failed: %v\n%s", err, output)
+	}
+
+	got := strings.Split(strings.TrimSpace(string(output)), "\n")
+	want := []string{".|", "ads1|1", "ads1/|"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("path contexts = %#v, want %#v", got, want)
 	}
 }
 
