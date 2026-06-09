@@ -82,7 +82,7 @@ Options
 `--files` and `--dirs` cannot be used together.
 
 In non-interactive mode, `--sort=mtime` prints oldest paths first. In
-interactive mode, Ctrl-Space can sort the current visible match set newest
+interactive mode, Ctrl-Space can sort the current query's matched paths newest
 first.
 
 ## Interactive Picker
@@ -249,14 +249,16 @@ selection and current-result actions.
 Multi-token searches can use a soft cutoff. If the top matches look strong, the
 picker can expose the top 50. If matches look mixed or weaker, it can expose up
 to 200. Single-token searches and small result sets can show all matches. This
-keeps weak tail matches out of selection and out of Ctrl-Space recent sorting
-without discarding the full ranked match list internally.
+keeps weak tail matches out of selection and out of normal current-result
+actions without discarding the full ranked match list internally.
 
-Ctrl-Space sorts the current active match set newest first. It does not
-necessarily stat the whole discovered tree, and it does not stat directories.
-Mtime values are cached during the picker session. The stat call reads metadata,
-not file contents, so it can be fast after traversal has warmed filesystem
-caches.
+Ctrl-Space first applies pending filtering for paths discovered so far, then
+sorts all matched paths for the current query newest first, including matches
+outside the normal top 50 or top 200 window. It does not wait for the whole tree
+scan to finish. It does not necessarily stat the whole discovered tree, and it
+does not stat directories. Mtime values are cached during the picker session.
+The stat call reads metadata, not file contents, so it can be fast after
+traversal has warmed filesystem caches.
 
 ## Ignoring Directories
 

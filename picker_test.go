@@ -501,7 +501,7 @@ func TestPickerModelSortCurrentMatchesNewest(t *testing.T) {
 	}
 }
 
-func TestPickerModelSortCurrentMatchesStatsOnlyEffectiveMatches(t *testing.T) {
+func TestPickerModelSortCurrentMatchesStatsAllFullMatches(t *testing.T) {
 	root := t.TempDir()
 	writeTestFileWithModTime(t, root, "visible.jpg", time.Unix(2, 0))
 	writeTestFileWithModTime(t, root, "hidden.jpg", time.Unix(3, 0))
@@ -519,8 +519,50 @@ func TestPickerModelSortCurrentMatchesStatsOnlyEffectiveMatches(t *testing.T) {
 	if _, ok := model.mtimeCache["visible.jpg"]; !ok {
 		t.Fatal("visible match mtime was not cached")
 	}
-	if _, ok := model.mtimeCache["hidden.jpg"]; ok {
-		t.Fatal("hidden full match was statted unexpectedly")
+	if _, ok := model.mtimeCache["hidden.jpg"]; !ok {
+		t.Fatal("hidden full match mtime was not cached")
+	}
+	if got := matchPaths(model.matches); !equalStrings(got, []string{"hidden.jpg", "visible.jpg"}) {
+		t.Fatalf("recent matches = %#v, want full match set newest first", got)
+	}
+}
+
+func TestPickerModelSortCurrentMatchesUsesFullMatchesBeyondEffectiveWindow(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.appliedQuery = "camera .jpg"
+	model.fullMatches = make([]Match, 0, effectiveStrongWindowMatches+1)
+	for i := 0; i < effectiveStrongWindowMatches; i++ {
+		model.fullMatches = append(model.fullMatches, Match{
+			Entry: Entry{
+				Path:      "Camera/20210429_" + threeDigitString(i) + ".jpg",
+				Type:      TypeFile,
+				ModTimeNS: int64(i + 1),
+			},
+		})
+	}
+	newest := Match{
+		Entry: Entry{
+			Path:      "Camera/20260608_114105.jpg",
+			Type:      TypeFile,
+			ModTimeNS: int64(effectiveStrongWindowMatches + 100),
+		},
+	}
+	model.fullMatches = append(model.fullMatches, newest)
+	model.matches = model.fullMatches[:effectiveStrongWindowMatches]
+
+	model.sortCurrentMatchesNewest()
+
+	if got := model.matches[0].Entry.Path; got != newest.Entry.Path {
+		t.Fatalf("first recent match = %q, want newest full match outside effective window", got)
+	}
+	if got := len(model.matches); got != len(model.fullMatches) {
+		t.Fatalf("recent matches = %d, want all %d full matches", got, len(model.fullMatches))
+	}
+	if got := model.statusLine(); strings.Contains(got, "showing top") {
+		t.Fatalf("status line = %q, want all full matches exposed after recent sort", got)
+	}
+	if got := model.fullMatches[len(model.fullMatches)-1].Entry.Path; got != newest.Entry.Path {
+		t.Fatalf("full match ranking was reordered; last = %q, want %q", got, newest.Entry.Path)
 	}
 }
 
@@ -600,6 +642,186 @@ func TestPickEntrySortRecentAppliesPendingQuery(t *testing.T) {
 	}
 	if _, ok := model.mtimeCache["beta-new.jpg"]; ok {
 		t.Fatal("unmatched beta path was statted unexpectedly")
+	}
+}
+
+func TestPickEntrySortRecentRefreshesStaleQuerySnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeTestFileWithModTime(t, root, "camera-old.jpg", time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	writeTestFileWithModTime(t, root, "camera-new.jpg", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	model := newPickerModel(SortPath)
+	model.root = root
+	model.scanning = true
+	model.addEntry(Entry{Path: "camera-old.jpg", Type: TypeFile})
+	model.query = []rune("camera .jpg")
+	model.queryCursor = len(model.query)
+	model.applyQuery()
+
+	scanCh := make(chan ScanResult, 1)
+	keyCh := make(chan keyEvent)
+	snapshots := make(chan pickerSnapshot, 20)
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRenderer(context.Background(), model, scanCh, keyCh, snapshotRenderer(model, snapshots), 0, fixedQueryDebounce(time.Hour))
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 1 &&
+			snapshot.matchedEntriesVersion == 1 &&
+			equalStrings(snapshot.paths, []string{"camera-old.jpg"})
+	})
+	scanCh <- ScanResult{Entries: []Entry{{Path: "camera-new.jpg", Type: TypeFile}}}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 2 &&
+			snapshot.matchedEntriesVersion == 1 &&
+			equalStrings(snapshot.paths, []string{"camera-old.jpg"})
+	})
+
+	keyCh <- keyEvent{kind: keySortRecent}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.entriesVersion == 2 &&
+			snapshot.matchedEntriesVersion == 2 &&
+			equalStrings(snapshot.paths, []string{"camera-new.jpg", "camera-old.jpg"})
+	})
+	keyCh <- keyEvent{kind: keyEnter}
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "camera-new.jpg" {
+			t.Fatalf("selected path = %q, want newest refreshed camera match", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for refreshed recent selection")
+	}
+}
+
+func TestPickEntrySortRecentEnterSelectsVisibleSnapshotDuringStaleRefresh(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.query = []rune("camera .jpg")
+	model.queryCursor = len(model.query)
+	model.appliedQuery = string(model.query)
+	model.entries = []Entry{
+		{Path: "camera-old.jpg", Type: TypeFile, ModTimeNS: modTimeNS(time.Unix(1, 0))},
+		{Path: "camera-new.jpg", Type: TypeFile, ModTimeNS: modTimeNS(time.Unix(2, 0))},
+	}
+	model.entriesVersion = 2
+	model.fullMatches = []Match{{Entry: model.entries[0]}}
+	model.matches = model.fullMatches
+	model.matchedEntriesVersion = 1
+
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	started := make(chan queryJob, 1)
+	canceled := make(chan struct{}, 1)
+	ranker := func(ctx context.Context, job queryJob) ([]Match, bool) {
+		started <- job
+		<-ctx.Done()
+		canceled <- struct{}{}
+		return nil, false
+	}
+	rendered := make(chan struct{}, 20)
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRendererAndRanker(context.Background(), model, scanCh, keyCh, testRenderer(rendered), time.Hour, fixedQueryDebounce(time.Hour), ranker)
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForRenderCount(t, rendered, 1)
+	keyCh <- keyEvent{kind: keySortRecent}
+	job := waitForQueryJob(t, started)
+	if job.query != "camera .jpg" || job.entriesVersion != 2 {
+		t.Fatalf("job = query %q version %d, want camera .jpg/version 2", job.query, job.entriesVersion)
+	}
+	keyCh <- keyEvent{kind: keyEnter}
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "camera-old.jpg" {
+			t.Fatalf("selected path = %q, want current visible camera match", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for current selection")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stale refresh cancellation")
+	}
+}
+
+func TestPickEntrySortRecentRefreshesAfterRecentSortActive(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.scanning = false
+	model.query = []rune("camera .jpg")
+	model.queryCursor = len(model.query)
+	model.appliedQuery = string(model.query)
+	model.entries = []Entry{
+		{Path: "camera-old.jpg", Type: TypeFile, ModTimeNS: modTimeNS(time.Unix(1, 0))},
+		{Path: "camera-new.jpg", Type: TypeFile, ModTimeNS: modTimeNS(time.Unix(2, 0))},
+	}
+	model.entriesVersion = 2
+	model.fullMatches = []Match{{Entry: model.entries[0]}}
+	model.matches = model.fullMatches
+	model.matchedEntriesVersion = 1
+	model.recentSortActive = true
+
+	var scanCh chan ScanResult
+	keyCh := make(chan keyEvent)
+	snapshots := make(chan pickerSnapshot, 20)
+	done := make(chan Entry, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		entry, err := pickEntryWithRenderer(context.Background(), model, scanCh, keyCh, snapshotRenderer(model, snapshots), time.Hour, fixedQueryDebounce(time.Hour))
+		if err != nil {
+			errs <- err
+			return
+		}
+		done <- entry
+	}()
+
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.matchedEntriesVersion == 1 &&
+			equalStrings(snapshot.paths, []string{"camera-old.jpg"})
+	})
+	keyCh <- keyEvent{kind: keySortRecent}
+	waitForPickerSnapshot(t, snapshots, func(snapshot pickerSnapshot) bool {
+		return snapshot.matchedEntriesVersion == 2 &&
+			equalStrings(snapshot.paths, []string{"camera-new.jpg", "camera-old.jpg"})
+	})
+	keyCh <- keyEvent{kind: keyEnter}
+
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	case entry := <-done:
+		if entry.Path != "camera-new.jpg" {
+			t.Fatalf("selected path = %q, want newest refreshed camera match", entry.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for refreshed recent selection")
+	}
+	if model.matchedEntriesVersion != model.entriesVersion {
+		t.Fatalf("matched version = %d, want entries version %d", model.matchedEntriesVersion, model.entriesVersion)
 	}
 }
 

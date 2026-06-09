@@ -231,10 +231,18 @@ func (m *pickerModel) queryWorkPending() bool {
 	return m.queryDirty || m.querySnapshotStale()
 }
 
+func (m *pickerModel) recentSortQueryWorkPending() bool {
+	return m.queryDirty || m.querySnapshotStaleForRecentSort()
+}
+
 func (m *pickerModel) querySnapshotStale() bool {
 	if m.recentSortActive {
 		return false
 	}
+	return m.querySnapshotStaleForRecentSort()
+}
+
+func (m *pickerModel) querySnapshotStaleForRecentSort() bool {
 	return string(m.query) == m.appliedQuery && m.matchedEntriesVersion != m.entriesVersion
 }
 
@@ -262,14 +270,22 @@ func matchesFromEntries(entries []Entry) []Match {
 }
 
 func (m *pickerModel) sortCurrentMatchesNewest() {
-	if len(m.matches) == 0 {
+	source := m.matches
+	if len(m.fullMatches) > 0 {
+		source = m.fullMatches
+	}
+	if len(source) == 0 {
 		return
 	}
+	m.matches = make([]Match, len(source))
+	copy(m.matches, source)
 	if m.mtimeCache == nil {
 		m.mtimeCache = make(map[string]int64, len(m.matches))
 	}
 	// The initial scan may omit mtimes for path-sorted interactive mode; fetch
-	// file mtimes lazily only for the visible user request to sort by recency.
+	// file mtimes lazily only for the user's explicit request to sort by recency.
+	// Recent sort uses every full match for the current query, not just the
+	// normal top-ranked window, so a newer lower-scored path can rise to the top.
 	for i := range m.matches {
 		if m.matches[i].Entry.Type != TypeDir {
 			m.matches[i].Entry.ModTimeNS = m.cachedModTimeNS(m.matches[i].Entry)
@@ -616,8 +632,12 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		}
 		return Entry{}, false, nil
 	}
-	startQueryJob := func(forceAsync bool) bool {
-		if !model.queryWorkPending() {
+	startQueryJob := func(forceAsync bool, recentSort bool) bool {
+		if recentSort {
+			if !model.recentSortQueryWorkPending() {
+				return false
+			}
+		} else if !model.queryWorkPending() {
 			return false
 		}
 		stopQueryTimer()
@@ -708,7 +728,19 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		if activeQueryID != 0 {
 			return true
 		}
-		return startQueryJob(forceAsync)
+		return startQueryJob(forceAsync, false)
+	}
+	applyPendingQueryForRecentSort := func(forceAsync bool) bool {
+		// Ctrl-Space is a request to sort the query's full matched set by recency.
+		// If scanning advanced since that set was ranked, refresh before sorting
+		// so new matching files are not left behind a stale view.
+		if !model.recentSortQueryWorkPending() {
+			return false
+		}
+		if activeQueryID != 0 {
+			return true
+		}
+		return startQueryJob(forceAsync, true)
 	}
 	flushPending := func() bool {
 		if len(pending) == 0 {
@@ -762,7 +794,7 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 		case <-queryTick:
 			queryTick = nil
 			flushPending()
-			startQueryJob(false)
+			startQueryJob(false, false)
 			renderer.renderFull()
 		case result := <-queryResultCh:
 			if applyQueryResult(result) {
@@ -798,12 +830,15 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			rendered := false
 			switch key.kind {
 			case keyRune:
+				pendingAction = pendingQueryNone
 				model.appendRune(key.r)
 				rendered = startQueryTimer(true)
 			case keyBackspace:
+				pendingAction = pendingQueryNone
 				model.backspace()
 				rendered = startQueryTimer(true)
 			case keyClearQuery:
+				pendingAction = pendingQueryNone
 				model.clearQuery()
 				rendered = startQueryTimer(true)
 			case keyDown:
@@ -834,9 +869,11 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 				}
 				return entry, nil
 			case keySortRecent:
-				if applyPendingQuery(true) {
-					// Ctrl-N after a dirty query means "filter first, then sort
-					// the resulting matches by recency."
+				if applyPendingQueryForRecentSort(true) {
+					// Ctrl-Space means "filter first, then sort the resulting
+					// matched set by recency." If Enter follows before this finishes
+					// and the query text is already applied, Enter keeps its normal
+					// current-selection behavior.
 					pendingAction = pendingQuerySortRecent
 					renderer.renderFull()
 					continue
