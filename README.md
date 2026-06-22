@@ -47,6 +47,8 @@ fzr --eval zsh
 ```
 
 Commands that scan need an explicit root. With no root, `fzr` prints help.
+A missing root is an error. During traversal, permission-denied paths and paths
+that disappear while scanning are skipped.
 
 Common examples:
 

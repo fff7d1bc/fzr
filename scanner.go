@@ -62,6 +62,22 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 		if root == "" {
 			root = "."
 		}
+		if _, err := os.Lstat(root); err != nil {
+			// A missing requested root is a user-facing input error, unlike a
+			// descendant path that disappears while the scan is already running.
+			if errors.Is(err, fs.ErrNotExist) {
+				_ = sendScanResult(ctx, out, ScanResult{Err: err})
+				return
+			}
+			// Permission-denied roots are treated like unreadable directories
+			// encountered later in traversal: skip them instead of failing the
+			// picker on systems with partially inaccessible trees.
+			if skippableScanError(err) {
+				return
+			}
+			_ = sendScanResult(ctx, out, ScanResult{Err: err})
+			return
+		}
 		cleanRoot := filepath.Clean(root)
 		rootPrefix := cleanRoot + string(filepath.Separator)
 		ignored := ignoredDirSet(opts.Ignored)
@@ -159,8 +175,10 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 }
 
 func skippableScanError(err error) bool {
-	// Files can disappear or become unreadable while the tree is being scanned.
-	// Treat those races like shells and find(1) usually do: skip and continue.
+	// Files can disappear or become unreadable while the tree is being scanned,
+	// and real deployments often include directories the current user cannot
+	// enter. Keep those cases non-fatal; callers handle the requested root
+	// separately so a typo in the root path still reports an error.
 	return errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)
 }
 
@@ -336,7 +354,7 @@ func sortEntries(entries []Entry, mode SortMode) {
 	switch mode {
 	case SortMTime:
 		// Non-interactive mtime sort is oldest-first for stable pipeline use;
-		// the interactive Ctrl-N recent sort is the newest-first view.
+		// the interactive Ctrl-Space recent sort is the newest-first view.
 		sort.SliceStable(entries, func(i, j int) bool {
 			if entries[i].ModTimeNS == entries[j].ModTimeNS {
 				return entries[i].Path < entries[j].Path

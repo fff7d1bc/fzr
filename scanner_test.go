@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -90,8 +91,31 @@ func TestSkippableScanErrorAllowsPermissionErrors(t *testing.T) {
 	if !skippableScanError(err) {
 		t.Fatal("permission error was not skippable")
 	}
+	err = &fs.PathError{Op: "open", Path: "gone", Err: fs.ErrNotExist}
+	if !skippableScanError(err) {
+		t.Fatal("not-exist error was not skippable")
+	}
 	if skippableScanError(errors.New("boom")) {
 		t.Fatal("generic error was skippable")
+	}
+}
+
+func TestScanEntriesMissingRootReturnsError(t *testing.T) {
+	for _, followLinks := range []bool{false, true} {
+		t.Run(fmt.Sprintf("follow-links-%v", followLinks), func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "missing")
+			entries, err := collectEntries(context.Background(), ScanOptions{
+				Root:        root,
+				TypeFilter:  FilterAll,
+				FollowLinks: followLinks,
+			})
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("err = %v, want fs.ErrNotExist", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("entries = %#v, want none", entries)
+			}
+		})
 	}
 }
 
