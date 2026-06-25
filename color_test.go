@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"testing"
 )
@@ -50,6 +51,16 @@ func TestShouldUsePickerColorUsesStderrTTY(t *testing.T) {
 
 	if shouldUsePickerColor(file, testEnv(map[string]string{"TERM": "xterm-256color"})) {
 		t.Fatal("expected regular file stderr to disable auto color")
+	}
+}
+
+func TestPickerThemeForWriterDisablesAutoColorForNonFileWriter(t *testing.T) {
+	var stderr bytes.Buffer
+
+	theme := pickerThemeForWriter(&stderr, mustParseMatchStyle(defaultMatchStyle))
+
+	if theme.matchStart != "" || theme.dimStart != "" || theme.statusStart != "" {
+		t.Fatalf("theme = %#v, want no color for non-file stderr writer", theme)
 	}
 }
 

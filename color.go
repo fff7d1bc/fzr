@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -30,6 +31,16 @@ type pickerTheme struct {
 
 func pickerThemeForStderr(stderr *os.File, style matchStyle) pickerTheme {
 	return pickerThemeForColorAndStyle(shouldUsePickerColor(stderr, os.Getenv), style)
+}
+
+func pickerThemeForWriter(stderr io.Writer, style matchStyle) pickerTheme {
+	file, ok := stderr.(*os.File)
+	if !ok {
+		// Non-file writers cannot be queried for terminal capability, so keep
+		// auto color off for tests and embedded callers that supply buffers.
+		return pickerThemeForColorAndStyle(false, style)
+	}
+	return pickerThemeForStderr(file, style)
 }
 
 func pickerThemeForColor(color bool) pickerTheme {

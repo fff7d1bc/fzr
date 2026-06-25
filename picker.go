@@ -452,7 +452,7 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	scanCh := scanEntries(ctx, opts)
 	keyCh := readKeys(stdin)
 	width := terminalWidth(inFD)
-	theme := pickerThemeForStderr(os.Stderr, matchStyle)
+	theme := pickerThemeForWriter(stderr, matchStyle)
 
 	preparePicker(stderr)
 	fmt.Fprint(stderr, "\x1b[?25l")
