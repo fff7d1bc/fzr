@@ -46,9 +46,10 @@ fzr [options] root
 fzr --eval zsh
 ```
 
-Commands that scan need an explicit root. With no root, `fzr` prints help.
-A missing root is an error. During traversal, permission-denied paths and paths
-that disappear while scanning are skipped.
+Commands that scan need an explicit root. With no root, or with only scan
+options and no root, `fzr` prints help. A root path that does not exist is an
+error. During traversal, permission-denied paths and paths that disappear while
+scanning are skipped.
 
 Common examples:
 
@@ -340,6 +341,8 @@ Ctrl-F searches from that directory. Whitespace before the cursor starts a
 separate path insertion from the current directory.
 
 ## Build And Install
+
+Building requires Go 1.26 or newer.
 
 Build the binary
 
