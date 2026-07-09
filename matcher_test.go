@@ -73,6 +73,29 @@ func TestRankEntriesPrefersBoundariesAndConsecutiveMatches(t *testing.T) {
 	}
 }
 
+func TestRankEntriesNonEmptyQueryIgnoresScanOrder(t *testing.T) {
+	depthFirst := []Entry{
+		{Path: "c9d"},
+		{Path: "c9d/some"},
+		{Path: "c9d/some/nested"},
+		{Path: "c9d/some/nested/terraform"},
+		{Path: "provider-terraform-foobar"},
+	}
+	shallowFirst := []Entry{
+		{Path: "c9d"},
+		{Path: "provider-terraform-foobar"},
+		{Path: "c9d/some"},
+		{Path: "c9d/some/nested"},
+		{Path: "c9d/some/nested/terraform"},
+	}
+
+	gotDepthFirst := matchPaths(rankEntries(depthFirst, "terrafor", SortPath))
+	gotShallowFirst := matchPaths(rankEntries(shallowFirst, "terrafor", SortPath))
+	if !reflect.DeepEqual(gotDepthFirst, gotShallowFirst) {
+		t.Fatalf("depth-first ranked paths = %#v, shallow-first ranked paths = %#v", gotDepthFirst, gotShallowFirst)
+	}
+}
+
 func TestRankEntriesGluedQueryPrefersFzyLikeExtensionAlignment(t *testing.T) {
 	entries := []Entry{
 		{Path: "fixtures/CAN_mounts/CAD/EBB36 controller mount strain relief.f3d"},

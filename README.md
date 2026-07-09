@@ -217,7 +217,9 @@ ordered fuzzy abbreviation.
 
 ## Large Trees
 
-Scanning starts immediately and results are added as they are discovered.
+Scanning starts immediately and results are added as they are discovered. A
+directory's immediate entries are discovered before its descendants, so nearby
+paths can appear in the picker while a large subtree is still being scanned.
 
 Filtering has a short delay on large candidate sets so typing does not turn into
 a slow per-character refresh. When you add text to the end of the query and no

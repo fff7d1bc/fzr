@@ -149,6 +149,23 @@ func TestScanEntriesTypeFilters(t *testing.T) {
 	}
 }
 
+func TestScanEntriesDiscoversShallowSiblingsBeforeDescendants(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "c9d", "some", "nested", "terraform", "log.txt"))
+	writeFile(t, filepath.Join(root, "provider-terraform-foobar", "main.tf"))
+
+	entries, err := collectEntries(context.Background(), ScanOptions{
+		Root:       root,
+		TypeFilter: FilterDirs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := entryPaths(entries)
+	assertPathBefore(t, got, "provider-terraform-foobar", "c9d/some/nested/terraform")
+}
+
 func TestScanEntriesDoesNotFollowSymlinksByDefault(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "real", "a.txt"))
@@ -194,6 +211,28 @@ func TestScanEntriesFollowsSymlinkedDirectoriesWhenRequested(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("paths = %#v, want %#v", got, want)
 	}
+}
+
+func TestScanEntriesFollowSymlinksDiscoversShallowSiblingsBeforeDescendants(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target")
+	writeFile(t, filepath.Join(target, "some", "nested", "terraform", "log.txt"))
+	if err := os.Symlink(target, filepath.Join(root, "c9d")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	writeFile(t, filepath.Join(root, "provider-terraform-foobar", "main.tf"))
+
+	entries, err := collectEntries(context.Background(), ScanOptions{
+		Root:        root,
+		TypeFilter:  FilterDirs,
+		FollowLinks: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := entryPaths(entries)
+	assertPathBefore(t, got, "provider-terraform-foobar", "c9d/some/nested/terraform")
 }
 
 func TestScanEntriesFollowsMultiplePathsToSameDirectory(t *testing.T) {
@@ -380,4 +419,23 @@ func entryPaths(entries []Entry) []string {
 		paths[i] = entry.Path
 	}
 	return paths
+}
+
+func assertPathBefore(t *testing.T, paths []string, before, after string) {
+	t.Helper()
+	beforeIndex, afterIndex := -1, -1
+	for i, path := range paths {
+		switch path {
+		case before:
+			beforeIndex = i
+		case after:
+			afterIndex = i
+		}
+	}
+	if beforeIndex < 0 || afterIndex < 0 {
+		t.Fatalf("paths = %#v, want both %q and %q", paths, before, after)
+	}
+	if beforeIndex > afterIndex {
+		t.Fatalf("paths = %#v, want %q before %q", paths, before, after)
+	}
 }

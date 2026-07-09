@@ -62,7 +62,8 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 		if root == "" {
 			root = "."
 		}
-		if _, err := os.Lstat(root); err != nil {
+		rootInfo, err := os.Lstat(root)
+		if err != nil {
 			// A missing requested root is a user-facing input error, unlike a
 			// descendant path that disappears while the scan is already running.
 			if errors.Is(err, fs.ErrNotExist) {
@@ -131,41 +132,19 @@ func scanEntries(ctx context.Context, opts ScanOptions) <-chan ScanResult {
 			return nil
 		}
 
-		var err error
 		if opts.FollowLinks {
 			err = walkDirFollowLinks(ctx, root, ignored, addEntry)
+		} else if !rootInfo.IsDir() {
+			err = nil
 		} else {
-			err = filepath.WalkDir(root, func(path string, dirent fs.DirEntry, walkErr error) error {
-				if walkErr != nil {
-					if skippableScanError(walkErr) {
-						return nil
-					}
-					if err := flush(); err != nil {
-						return err
-					}
-					return sendScanResult(ctx, out, ScanResult{Err: walkErr})
-				}
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-
-				if path == root {
-					return nil
-				}
-
-				if dirent.IsDir() && ignoredDir(ignored, dirent.Name()) {
-					return filepath.SkipDir
-				}
-
-				entryType := TypeFile
-				if dirent.IsDir() {
-					entryType = TypeDir
-				}
-				return addEntry(path, dirent, entryType)
-			})
+			err = walkDirShallowFirst(ctx, root, ignored, addEntry)
 		}
 		if err == nil {
 			err = flush()
+		} else if !errors.Is(err, context.Canceled) {
+			if flushErr := flush(); flushErr != nil {
+				err = flushErr
+			}
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			_ = sendScanResult(ctx, out, ScanResult{Err: err})
@@ -185,6 +164,50 @@ func skippableScanError(err error) bool {
 func ignoredDir(ignored map[string]struct{}, name string) bool {
 	_, ok := ignored[name]
 	return ok
+}
+
+func walkDirShallowFirst(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
+	var walk func(string) error
+	walk = func(dir string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if skippableScanError(err) {
+				return nil
+			}
+			return err
+		}
+		childDirs := make([]string, 0, len(entries))
+		for _, dirent := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			path := filepath.Join(dir, dirent.Name())
+			entryType := TypeFile
+			if dirent.IsDir() {
+				if ignoredDir(ignored, dirent.Name()) {
+					continue
+				}
+				entryType = TypeDir
+				childDirs = append(childDirs, path)
+			}
+			if err := addEntry(path, dirent, entryType); err != nil {
+				return err
+			}
+		}
+		// Emit a directory's immediate entries before descending. This keeps
+		// nearby paths available to the interactive picker while a large earlier
+		// sibling is still being scanned.
+		for _, childDir := range childDirs {
+			if err := walk(childDir); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root)
 }
 
 func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
@@ -210,6 +233,11 @@ func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]str
 			}
 			return err
 		}
+		type childDir struct {
+			path      string
+			ancestors map[string]struct{}
+		}
+		childDirs := make([]childDir, 0, len(entries))
 		for _, dirent := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -239,9 +267,14 @@ func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]str
 				if cycle {
 					continue
 				}
-				if err := walk(path, nextAncestors); err != nil {
-					return err
-				}
+				childDirs = append(childDirs, childDir{path: path, ancestors: nextAncestors})
+			}
+		}
+		// Keep follow-link traversal aligned with the default shallow-first
+		// order while preserving per-branch realpath ancestry for cycle checks.
+		for _, childDir := range childDirs {
+			if err := walk(childDir.path, childDir.ancestors); err != nil {
+				return err
 			}
 		}
 		return nil
