@@ -343,6 +343,10 @@ instead of silently returning incomplete output.
 Help is written to stdout. Invalid options and missing option values are
 reported once on stderr and exit with status `1`.
 
+Successful listings, selections, help, and `--eval` exit with status `0`.
+Interactive cancellation and ordinary runtime errors exit with status `1`.
+Termination signals retain their normal signal-derived status.
+
 ```
 path="$(fzr -i .)"
 ```
@@ -371,6 +375,13 @@ continue to expand, while quoted or backslash-escaped path characters are
 treated literally. A leading `NAME=directory` assignment uses `directory` as
 the path context; after the command word, `=` is an ordinary filename
 character.
+
+## Platform Support
+
+`fzr` supports Unix-like systems; Linux and macOS are the primary targets.
+Native Windows is not supported. Interactive mode requires terminal stdin and
+an ANSI-compatible terminal on stderr. The zsh widget also requires `/dev/tty`.
+Non-interactive listing does not require a terminal.
 
 ## Build And Install
 
