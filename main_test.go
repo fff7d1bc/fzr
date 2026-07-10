@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,12 @@ import (
 	"strings"
 	"testing"
 )
+
+var errTestWrite = errors.New("test write failure")
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errTestWrite }
 
 func TestParseArgsCaseSensitive(t *testing.T) {
 	var stderr bytes.Buffer
@@ -225,6 +233,32 @@ func TestRunEvalZshPrintsIntegration(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunReportsHelpWriteFailure(t *testing.T) {
+	err := run([]string{"--help"}, failingWriter{}, io.Discard)
+	if !errors.Is(err, errTestWrite) {
+		t.Fatalf("err = %v, want test write failure", err)
+	}
+}
+
+func TestRunReportsEvalWriteFailure(t *testing.T) {
+	err := run([]string{"--eval", "zsh"}, failingWriter{}, io.Discard)
+	if !errors.Is(err, errTestWrite) {
+		t.Fatalf("err = %v, want test write failure", err)
+	}
+}
+
+func TestRunReportsPathWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "entry"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run([]string{root}, failingWriter{}, io.Discard)
+	if !errors.Is(err, errTestWrite) {
+		t.Fatalf("err = %v, want test write failure", err)
 	}
 }
 

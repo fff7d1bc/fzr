@@ -77,12 +77,10 @@ func reraiseSignal(received os.Signal) {
 
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		printUsage(stdout)
-		return nil
+		return printUsage(stdout)
 	}
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		printUsage(stdout)
-		return nil
+		return printUsage(stdout)
 	}
 
 	cfg, err := parseArgs(args, stderr)
@@ -93,12 +91,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if cfg.evalShell != "" {
-		fmt.Fprint(stdout, zshIntegrationScript)
-		return nil
+		_, err := fmt.Fprint(stdout, zshIntegrationScript)
+		return outputWriteError(err)
 	}
 	if cfg.showHelp {
-		printUsage(stdout)
-		return nil
+		return printUsage(stdout)
 	}
 
 	opts := ScanOptions{
@@ -119,9 +116,23 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	sortEntries(entries, cfg.sortMode)
 	for _, entry := range entries {
-		fmt.Fprintln(stdout, entry.Path)
+		if err := writePath(stdout, entry.Path); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func writePath(w io.Writer, path string) error {
+	_, err := fmt.Fprintln(w, path)
+	return outputWriteError(err)
+}
+
+func outputWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("write output: %w", err)
 }
 
 func parseArgs(args []string, stderr io.Writer) (config, error) {
@@ -132,7 +143,7 @@ func parseArgs(args []string, stderr io.Writer) (config, error) {
 	fs := flag.NewFlagSet("fzr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		printUsage(stderr)
+		_ = printUsage(stderr)
 	}
 	fs.BoolVar(&cfg.interactive, "i", false, "open interactive picker")
 	fs.BoolVar(&cfg.interactive, "interactive", false, "open interactive picker")
@@ -211,8 +222,8 @@ func ignoredNamesForConfig(cfg config) []string {
 	return ignored
 }
 
-func printUsage(w io.Writer) {
-	fmt.Fprintf(w, `Usage: fzr [options] root
+func printUsage(w io.Writer) error {
+	_, err := fmt.Fprintf(w, `Usage: fzr [options] root
        fzr --eval zsh
 
 Options:
@@ -230,4 +241,5 @@ Options:
       --eval SHELL       print shell integration script: zsh
   -h, --help             print usage
 `, strings.Join(CommonIgnoredDirNames, ", "))
+	return outputWriteError(err)
 }

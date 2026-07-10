@@ -486,8 +486,7 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	if err := term.Restore(inFD, oldState); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, selected.Path)
-	return nil
+	return writePath(stdout, selected.Path)
 }
 
 func pickEntry(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, stderr io.Writer, width int, theme pickerTheme) (Entry, error) {

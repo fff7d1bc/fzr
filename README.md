@@ -332,6 +332,9 @@ a selected filename.
 Interactive mode writes UI to stderr and prints only the selected path to
 stdout. That makes command substitution work cleanly.
 
+If stdout cannot be written, `fzr` reports the error and exits with status `1`
+instead of silently returning incomplete output.
+
 ```
 path="$(fzr -i .)"
 ```
