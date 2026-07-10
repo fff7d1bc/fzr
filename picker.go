@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -1165,11 +1167,96 @@ func effectiveScanRenderInterval(interval time.Duration) time.Duration {
 	return interval
 }
 
-func displayPath(entry Entry) string {
-	if entry.Type == TypeDir {
-		return entry.Path + "/"
+type displayToken struct {
+	text           string
+	sourcePosition int
+}
+
+func safeDisplayTokens(entry Entry) []displayToken {
+	tokens := make([]displayToken, 0, len(entry.Path)+1)
+	for bytePosition, sourcePosition := 0, 0; bytePosition < len(entry.Path); sourcePosition++ {
+		r, size := utf8.DecodeRuneInString(entry.Path[bytePosition:])
+		text := ""
+		if r == utf8.RuneError && size == 1 {
+			text = fmt.Sprintf("\\x%02x", entry.Path[bytePosition])
+		} else {
+			text = safeDisplayRune(r)
+		}
+		tokens = append(tokens, displayToken{text: text, sourcePosition: sourcePosition})
+		bytePosition += size
 	}
-	return entry.Path
+	if entry.Type == TypeDir {
+		tokens = append(tokens, displayToken{text: "/", sourcePosition: -1})
+	}
+	return tokens
+}
+
+func safeDisplayRune(r rune) string {
+	switch r {
+	case '\\':
+		return "\\\\"
+	case '\n':
+		return "\\n"
+	case '\r':
+		return "\\r"
+	case '\t':
+		return "\\t"
+	}
+	if unicode.IsPrint(r) {
+		return string(r)
+	}
+	if r <= 0xff {
+		return fmt.Sprintf("\\x%02x", r)
+	}
+	if r <= 0xffff {
+		return fmt.Sprintf("\\u%04x", r)
+	}
+	return fmt.Sprintf("\\U%08x", r)
+}
+
+func trimDisplayTokens(tokens []displayToken, width int) []displayToken {
+	if width <= 0 {
+		return tokens
+	}
+	total := 0
+	for _, token := range tokens {
+		total += len([]rune(token.text))
+	}
+	if total <= width {
+		return tokens
+	}
+	if width <= 3 {
+		used := 0
+		end := 0
+		for end < len(tokens) {
+			tokenWidth := len([]rune(tokens[end].text))
+			if used+tokenWidth > width {
+				break
+			}
+			used += tokenWidth
+			end++
+		}
+		return tokens[:end]
+	}
+
+	available := width - 3
+	used := 0
+	start := len(tokens)
+	for start > 0 {
+		tokenWidth := len([]rune(tokens[start-1].text))
+		if used+tokenWidth > available {
+			break
+		}
+		used += tokenWidth
+		start--
+	}
+	for start < len(tokens) && tokens[start].text == "/" {
+		start++
+	}
+	trimmed := make([]displayToken, 0, len(tokens)-start+1)
+	trimmed = append(trimmed, displayToken{text: "...", sourcePosition: -1})
+	trimmed = append(trimmed, tokens[start:]...)
+	return trimmed
 }
 
 func styledResultLine(entry Entry, selected bool, queries []string, width int, theme pickerTheme, caseSensitive bool) string {
@@ -1186,32 +1273,20 @@ func styledResultLine(entry Entry, selected bool, queries []string, width int, t
 }
 
 func styledDisplayPath(entry Entry, queries []string, width int, theme pickerTheme, caseSensitive bool) string {
-	display := displayPath(entry)
-	trimmed := trimPathForDisplay(display, width)
+	tokens := trimDisplayTokens(safeDisplayTokens(entry), width)
 	positions, ok := matchPositionsForQueriesWithCase(entry.Path, queries, caseSensitive)
-
-	visibleStart := 0
-	trimmedPrefix := 0
-	if strings.HasPrefix(trimmed, "...") && len([]rune(display)) > len([]rune(trimmed)) {
-		visibleStart = len([]rune(display)) - len([]rune(trimmed)) + 3
-		trimmedPrefix = 3
-	}
 	positionSet := make(map[int]struct{}, len(positions))
 	for _, pos := range positions {
-		trimmedPos := pos - visibleStart + trimmedPrefix
-		if trimmedPos >= trimmedPrefix {
-			positionSet[trimmedPos] = struct{}{}
-		}
+		positionSet[pos] = struct{}{}
 	}
 
-	basenameStart := displayBasenameStart(display, entry.Type)
+	basenameStart := displayBasenameStart(entry.Path)
 	var b strings.Builder
 	inMatch := false
 	inDim := false
-	for i, r := range []rune(trimmed) {
-		fullPosition := visibleStart + i - trimmedPrefix
-		shouldDim := theme.dimStart != "" && i >= trimmedPrefix && fullPosition >= 0 && fullPosition < basenameStart
-		_, shouldStyle := positionSet[i]
+	for _, token := range tokens {
+		shouldDim := theme.dimStart != "" && token.sourcePosition >= 0 && token.sourcePosition < basenameStart
+		_, shouldStyle := positionSet[token.sourcePosition]
 		shouldStyle = shouldStyle && ok && theme.matchStart != ""
 		// Match style temporarily overrides dim; after a match ends, dim is
 		// restored when the remaining characters are still path context.
@@ -1235,7 +1310,7 @@ func styledDisplayPath(entry Entry, queries []string, width int, theme pickerThe
 				inDim = false
 			}
 		}
-		b.WriteRune(r)
+		b.WriteString(token.text)
 	}
 	if inMatch {
 		b.WriteString(theme.matchReset)
@@ -1246,13 +1321,9 @@ func styledDisplayPath(entry Entry, queries []string, width int, theme pickerThe
 	return b.String()
 }
 
-func displayBasenameStart(display string, entryType EntryType) int {
+func displayBasenameStart(display string) int {
 	runes := []rune(display)
-	end := len(runes)
-	if entryType == TypeDir && end > 0 && runes[end-1] == '/' {
-		end--
-	}
-	for i := end - 1; i >= 0; i-- {
+	for i := len(runes) - 1; i >= 0; i-- {
 		if runes[i] == '/' {
 			return i + 1
 		}

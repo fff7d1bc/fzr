@@ -2485,6 +2485,31 @@ func TestStyledDisplayPathHonorsCaseSensitiveMode(t *testing.T) {
 	}
 }
 
+func TestStyledDisplayPathEscapesUnsafeFilenameCharacters(t *testing.T) {
+	entry := Entry{Path: "dir/line\nbreak\r\t\x1b\\\u202ename" + string([]byte{0xff}), Type: TypeFile}
+
+	got := styledDisplayPath(entry, nil, 200, pickerThemeForColor(false), false)
+	want := "dir/line\\nbreak\\r\\t\\x1b\\\\\\u202ename\\xff"
+	if got != want {
+		t.Fatalf("safe display path = %q, want %q", got, want)
+	}
+	if strings.ContainsAny(got, "\r\n\x1b") {
+		t.Fatalf("safe display path contains terminal control bytes: %q", got)
+	}
+}
+
+func TestStyledDisplayPathDoesNotSplitEscapedTokenWhenTrimmed(t *testing.T) {
+	entry := Entry{Path: "prefix/unsafe\nname", Type: TypeFile}
+
+	got := styledDisplayPath(entry, nil, 8, pickerThemeForColor(false), false)
+	if strings.Contains(got, "\\n") && !strings.Contains(got, "\\nname") {
+		t.Fatalf("trimmed display split escaped token: %q", got)
+	}
+	if strings.ContainsAny(got, "\r\n") {
+		t.Fatalf("trimmed display contains newline bytes: %q", got)
+	}
+}
+
 func TestRenderPickerDoesNotEmitNewlines(t *testing.T) {
 	model := newPickerModel(SortPath)
 	model.addEntry(Entry{Path: "alpha", Type: TypeFile})
@@ -2497,6 +2522,25 @@ func TestRenderPickerDoesNotEmitNewlines(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "\x1b[1B") {
 		t.Fatalf("render used column-preserving cursor down: %q", out.String())
+	}
+}
+
+func TestRenderPickerDoesNotEmitFilenameControlBytes(t *testing.T) {
+	model := newPickerModel(SortPath)
+	model.addEntry(Entry{Path: "unsafe\n\r\x1b[2Jname", Type: TypeFile})
+
+	var out bytes.Buffer
+	renderPicker(&out, model, 40, pickerThemeForColor(false))
+
+	rendered := out.String()
+	if strings.ContainsAny(rendered, "\r\n") {
+		t.Fatalf("render emitted filename newline bytes: %q", rendered)
+	}
+	if strings.Contains(rendered, "\x1b[2Jname") {
+		t.Fatalf("render emitted filename escape sequence: %q", rendered)
+	}
+	if !strings.Contains(rendered, "unsafe\\n\\r\\x1b[2Jname") {
+		t.Fatalf("render missing escaped filename: %q", rendered)
 	}
 }
 

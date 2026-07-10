@@ -116,6 +116,11 @@ does nothing in `fzr`, check the macOS keyboard shortcuts for input sources.
 Directories are shown with a trailing `/`. Matching uses the real candidate
 path, not display-only markers.
 
+The picker escapes control characters and other non-printing filename bytes in
+Go-style notation such as `\\n`, `\\x1b`, and `\\u202e`. A literal backslash is
+shown as `\\\\`. These escapes are display-only: matching and the selected path
+on stdout continue to use the original filesystem name.
+
 Matched characters are green, bold, and underlined by default. Use
 `--style yellow,bold,underline` to switch to yellow, or `--style plain` to
 disable match styling. Style tokens are comma-separated and support `green`,
@@ -313,6 +318,12 @@ different symlink paths point at the same directory, both paths can appear.
 ## Output
 
 Non-interactive mode prints one relative path per line.
+
+Paths are written to stdout exactly as stored by the filesystem. Because the
+format is line-oriented, filenames containing carriage returns or newlines
+cannot be represented unambiguously. Interactive selection is also followed by
+a newline, and shell command substitution cannot preserve trailing newlines in
+a selected filename.
 
 Interactive mode writes UI to stderr and prints only the selected path to
 stdout. That makes command substitution work cleanly.
