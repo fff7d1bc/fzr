@@ -250,7 +250,9 @@ func walkDirShallowFirst(ctx context.Context, root string, ignored map[string]st
 }
 
 func openDirNoFollow(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := retryEINTR(func() (int, error) {
+		return unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +265,9 @@ func openDirNoFollow(path string) (*os.File, error) {
 }
 
 func openDirAtNoFollow(parent *os.File, name, path string) (*os.File, error) {
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := retryEINTR(func() (int, error) {
+		return unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +277,18 @@ func openDirAtNoFollow(parent *os.File, name, path string) (*os.File, error) {
 		return nil, fmt.Errorf("open directory %q: invalid file descriptor", path)
 	}
 	return file, nil
+}
+
+func retryEINTR[T any](operation func() (T, error)) (T, error) {
+	for {
+		result, err := operation()
+		// Go's os open helpers retry EINTR internally, but raw x/sys calls do
+		// not. Long macOS filesystem operations are particularly likely to be
+		// interrupted by runtime signal delivery, so preserve os.Open semantics.
+		if !errors.Is(err, unix.EINTR) {
+			return result, err
+		}
+	}
 }
 
 func skippableNoFollowOpenError(err error) bool {
