@@ -127,7 +127,9 @@ accounts for wide and combining Unicode characters.
 Matched characters are green, bold, and underlined by default. Use
 `--style yellow,bold,underline` to switch to yellow, or `--style plain` to
 disable match styling. Style tokens are comma-separated and support `green`,
-`yellow`, `bold`, `underline`, and `plain`.
+`yellow`, `bold`, `underline`, and `plain`. Automatic color requires stderr to
+be a terminal with a 256-color capability signal; `NO_COLOR`, `TERM=dumb`, and
+redirected stderr disable it.
 
 ## Matching
 

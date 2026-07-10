@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 const defaultMatchStyle = "green,bold,underline"
@@ -138,11 +140,7 @@ func matchStyleANSI(style matchStyle) (string, string) {
 }
 
 func shouldUsePickerColor(stderr *os.File, getenv func(string) string) bool {
-	info, err := stderr.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	return shouldUsePickerColorEnv(true, getenv)
+	return shouldUsePickerColorEnv(term.IsTerminal(int(stderr.Fd())), getenv)
 }
 
 func shouldUsePickerColorEnv(isTTY bool, getenv func(string) string) bool {

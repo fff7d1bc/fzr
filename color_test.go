@@ -43,14 +43,33 @@ func TestShouldUsePickerColorEnv(t *testing.T) {
 }
 
 func TestShouldUsePickerColorUsesStderrTTY(t *testing.T) {
-	file, err := os.CreateTemp(t.TempDir(), "stderr-*")
+	regular, err := os.CreateTemp(t.TempDir(), "stderr-*")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer regular.Close()
+	null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	pipeReader, pipeWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pipeReader.Close()
+	defer pipeWriter.Close()
 
-	if shouldUsePickerColor(file, testEnv(map[string]string{"TERM": "xterm-256color"})) {
-		t.Fatal("expected regular file stderr to disable auto color")
+	for name, file := range map[string]*os.File{
+		"regular file": regular,
+		"null device":  null,
+		"pipe":         pipeWriter,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if shouldUsePickerColor(file, testEnv(map[string]string{"TERM": "xterm-256color"})) {
+				t.Fatalf("expected %s stderr to disable auto color", name)
+			}
+		})
 	}
 }
 
