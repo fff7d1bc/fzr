@@ -83,10 +83,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return printUsage(stdout)
 	}
 
-	cfg, err := parseArgs(args, stderr)
+	cfg, err := parseArgs(args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil
+			return printUsage(stdout)
 		}
 		return err
 	}
@@ -135,16 +135,16 @@ func outputWriteError(err error) error {
 	return fmt.Errorf("write output: %w", err)
 }
 
-func parseArgs(args []string, stderr io.Writer) (config, error) {
+func parseArgs(args []string) (config, error) {
 	cfg := config{
 		sortMode:   SortPath,
 		matchStyle: mustParseMatchStyle(defaultMatchStyle),
 	}
 	fs := flag.NewFlagSet("fzr", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	fs.Usage = func() {
-		_ = printUsage(stderr)
-	}
+	// run owns help output and main owns diagnostics. Silence flag's automatic
+	// writes so a parse failure is reported exactly once on the correct stream.
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
 	fs.BoolVar(&cfg.interactive, "i", false, "open interactive picker")
 	fs.BoolVar(&cfg.interactive, "interactive", false, "open interactive picker")
 	var filesOnly, dirsOnly bool

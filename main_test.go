@@ -19,8 +19,7 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errTestWrite }
 
 func TestParseArgsCaseSensitive(t *testing.T) {
-	var stderr bytes.Buffer
-	cfg, err := parseArgs([]string{"--case-sensitive", "-i", "/tmp"}, &stderr)
+	cfg, err := parseArgs([]string{"--case-sensitive", "-i", "/tmp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +38,7 @@ func TestParseArgsCaseSensitive(t *testing.T) {
 }
 
 func TestParseArgsShortFlags(t *testing.T) {
-	var stderr bytes.Buffer
-	cfg, err := parseArgs([]string{"-f", "-s", "mtime", "-c", "-C", "-I", "target", "--follow-symlinks", "/tmp"}, &stderr)
+	cfg, err := parseArgs([]string{"-f", "-s", "mtime", "-c", "-C", "-I", "target", "--follow-symlinks", "/tmp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +66,7 @@ func TestParseArgsShortFlags(t *testing.T) {
 }
 
 func TestParseArgsLongIgnoreFlags(t *testing.T) {
-	var stderr bytes.Buffer
-	cfg, err := parseArgs([]string{"--ignore-common", "--ignore", "target", "--ignore", "dist"}, &stderr)
+	cfg, err := parseArgs([]string{"--ignore-common", "--ignore", "target", "--ignore", "dist"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +79,7 @@ func TestParseArgsLongIgnoreFlags(t *testing.T) {
 }
 
 func TestParseArgsStyle(t *testing.T) {
-	var stderr bytes.Buffer
-	cfg, err := parseArgs([]string{"--style", "yellow,bold,underline", "-i", "/tmp"}, &stderr)
+	cfg, err := parseArgs([]string{"--style", "yellow,bold,underline", "-i", "/tmp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +89,7 @@ func TestParseArgsStyle(t *testing.T) {
 }
 
 func TestParseArgsPlainStyle(t *testing.T) {
-	var stderr bytes.Buffer
-	cfg, err := parseArgs([]string{"--style", "plain", "-i", "/tmp"}, &stderr)
+	cfg, err := parseArgs([]string{"--style", "plain", "-i", "/tmp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,8 +101,7 @@ func TestParseArgsPlainStyle(t *testing.T) {
 func TestParseArgsRejectsInvalidStyle(t *testing.T) {
 	for _, value := range []string{"green,,bold", "green,yellow", "plain,bold", "blue"} {
 		t.Run(value, func(t *testing.T) {
-			var stderr bytes.Buffer
-			if _, err := parseArgs([]string{"--style", value, "-i", "/tmp"}, &stderr); err == nil {
+			if _, err := parseArgs([]string{"--style", value, "-i", "/tmp"}); err == nil {
 				t.Fatal("expected invalid style to fail")
 			}
 		})
@@ -132,16 +126,14 @@ func TestIgnoredNamesForConfig(t *testing.T) {
 }
 
 func TestParseArgsRejectsLatest(t *testing.T) {
-	var stderr bytes.Buffer
-	_, err := parseArgs([]string{"--latest"}, &stderr)
+	_, err := parseArgs([]string{"--latest"})
 	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
 		t.Fatalf("err = %v, want unknown flag", err)
 	}
 }
 
 func TestParseArgsRejectsFilesAndDirsShortFlags(t *testing.T) {
-	var stderr bytes.Buffer
-	if _, err := parseArgs([]string{"-f", "-d"}, &stderr); err == nil {
+	if _, err := parseArgs([]string{"-f", "-d"}); err == nil {
 		t.Fatal("expected -f and -d together to fail")
 	}
 }
@@ -184,6 +176,33 @@ func TestRunHelpPrintsHelpToStdout(t *testing.T) {
 			}
 			if stderr.Len() != 0 {
 				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunMixedOptionHelpPrintsOnlyToStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--files", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Usage: fzr [options] root") {
+		t.Fatalf("stdout = %q, want usage", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunParseErrorsDoNotWriteDiagnosticsDirectly(t *testing.T) {
+	for _, args := range [][]string{{"--latest"}, {"--ignore"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(args, &stdout, &stderr); err == nil {
+				t.Fatal("run returned nil, want parse error")
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Fatalf("stdout/stderr = %q/%q, want both empty", stdout.String(), stderr.String())
 			}
 		})
 	}
@@ -346,15 +365,13 @@ run_context 'cmd src*'
 }
 
 func TestParseArgsRejectsEvalRoot(t *testing.T) {
-	var stderr bytes.Buffer
-	if _, err := parseArgs([]string{"--eval", "zsh", "."}, &stderr); err == nil {
+	if _, err := parseArgs([]string{"--eval", "zsh", "."}); err == nil {
 		t.Fatal("expected --eval with root argument to fail")
 	}
 }
 
 func TestParseArgsRejectsUnknownEvalShell(t *testing.T) {
-	var stderr bytes.Buffer
-	if _, err := parseArgs([]string{"--eval", "fish"}, &stderr); err == nil {
+	if _, err := parseArgs([]string{"--eval", "fish"}); err == nil {
 		t.Fatal("expected unknown --eval shell to fail")
 	}
 }

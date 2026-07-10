@@ -338,6 +338,9 @@ stdout. That makes command substitution work cleanly.
 If stdout cannot be written, `fzr` reports the error and exits with status `1`
 instead of silently returning incomplete output.
 
+Help is written to stdout. Invalid options and missing option values are
+reported once on stderr and exit with status `1`.
+
 ```
 path="$(fzr -i .)"
 ```
