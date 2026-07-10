@@ -67,6 +67,7 @@ type pickerModel struct {
 	fallbackSort          SortMode
 	caseSensitive         bool
 	root                  string
+	followLinks           bool
 	mtimeCache            map[string]int64
 	recentSortActive      bool
 }
@@ -329,7 +330,13 @@ func (m *pickerModel) cachedModTimeNS(entry Entry) int64 {
 	if modTime, ok := m.mtimeCache[entry.Path]; ok {
 		return modTime
 	}
-	info, err := os.Lstat(m.entryFilesystemPath(entry))
+	stat := os.Lstat
+	if m.followLinks {
+		// Follow-mode entries describe their targets, so lazy recency metadata
+		// must use the same identity as scanning and type filtering.
+		stat = os.Stat
+	}
+	info, err := stat(m.entryFilesystemPath(entry))
 	if err != nil {
 		m.mtimeCache[entry.Path] = 0
 		return 0
@@ -465,6 +472,7 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	model := newPickerModel(sortMode)
 	model.caseSensitive = caseSensitive
 	model.root = opts.Root
+	model.followLinks = opts.FollowLinks
 	scanCh := scanEntries(ctx, opts)
 	keyCh := readKeys(stdin)
 	width := terminalWidth(inFD)

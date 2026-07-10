@@ -319,6 +319,8 @@ fzr -i --follow-symlinks .
 
 When following symlinked directories, `fzr` avoids directory cycles. If two
 different symlink paths point at the same directory, both paths can appear.
+Interactive Ctrl-Space recency sorting also uses the followed target's
+modification time.
 
 ## Output
 
