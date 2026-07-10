@@ -121,7 +121,8 @@ path, not display-only markers.
 The picker escapes control characters and other non-printing filename bytes in
 Go-style notation such as `\\n`, `\\x1b`, and `\\u202e`. A literal backslash is
 shown as `\\\\`. These escapes are display-only: matching and the selected path
-on stdout continue to use the original filesystem name.
+on stdout continue to use the original filesystem name. Display clipping
+accounts for wide and combining Unicode characters.
 
 Matched characters are green, bold, and underlined by default. Use
 `--style yellow,bold,underline` to switch to yellow, or `--style plain` to

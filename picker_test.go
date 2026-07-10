@@ -2545,11 +2545,46 @@ func TestStyledDisplayPathHighlightsOnlyVisibleTrimmedCharacters(t *testing.T) {
 
 func TestTrimPathForDisplayDoesNotSplitUTF8(t *testing.T) {
 	got := trimPathForDisplay("fixtures/unicode/世界/ファイル.txt", 14)
-	if !strings.Contains(got, "ファイル.txt") {
-		t.Fatalf("trimmed unicode path = %q, want intact filename", got)
+	if width := terminalStringWidth(got); width > 14 {
+		t.Fatalf("trimmed unicode path width = %d, want at most 14: %q", width, got)
 	}
 	if strings.ContainsRune(got, '\uFFFD') {
 		t.Fatalf("trimmed unicode path contains replacement rune: %q", got)
+	}
+}
+
+func TestTerminalStringWidthCountsWideAndCombiningRunes(t *testing.T) {
+	if got, want := terminalStringWidth("a界"), 3; got != want {
+		t.Fatalf("wide text width = %d, want %d", got, want)
+	}
+	if got, want := terminalStringWidth("e\u0301"), 1; got != want {
+		t.Fatalf("combining text width = %d, want %d", got, want)
+	}
+}
+
+func TestTrimPathForDisplayKeepsZeroWidthCombiningMark(t *testing.T) {
+	text := "abce\u0301"
+	if got := trimPathForDisplay(text, 4); got != text {
+		t.Fatalf("trimmed combining path = %q, want %q", got, text)
+	}
+}
+
+func TestStyledDisplayPathFitsWideCharactersInTerminalCells(t *testing.T) {
+	entry := Entry{Path: "prefix/界界/file.txt", Type: TypeFile}
+	got := styledDisplayPath(entry, nil, 12, pickerThemeForColor(false), false)
+	if width := terminalStringWidth(got); width > 12 {
+		t.Fatalf("display path width = %d, want at most 12: %q", width, got)
+	}
+}
+
+func TestWritePromptLineFitsWideCharactersAndCursor(t *testing.T) {
+	var out bytes.Buffer
+	text := "> 界界界"
+
+	writePromptLine(&out, text, len([]rune(text)), 8, pickerThemeForColor(false))
+
+	if !strings.Contains(out.String(), "...界界\x1b[7m \x1b[0m") {
+		t.Fatalf("wide prompt was not clipped by terminal cells: %q", out.String())
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+	textwidth "golang.org/x/text/width"
 )
 
 const pickerRows = 10
@@ -1263,7 +1264,7 @@ func trimDisplayTokens(tokens []displayToken, width int) []displayToken {
 	}
 	total := 0
 	for _, token := range tokens {
-		total += len([]rune(token.text))
+		total += terminalStringWidth(token.text)
 	}
 	if total <= width {
 		return tokens
@@ -1272,7 +1273,7 @@ func trimDisplayTokens(tokens []displayToken, width int) []displayToken {
 		used := 0
 		end := 0
 		for end < len(tokens) {
-			tokenWidth := len([]rune(tokens[end].text))
+			tokenWidth := terminalStringWidth(tokens[end].text)
 			if used+tokenWidth > width {
 				break
 			}
@@ -1286,12 +1287,16 @@ func trimDisplayTokens(tokens []displayToken, width int) []displayToken {
 	used := 0
 	start := len(tokens)
 	for start > 0 {
-		tokenWidth := len([]rune(tokens[start-1].text))
+		tokenWidth := terminalStringWidth(tokens[start-1].text)
 		if used+tokenWidth > available {
 			break
 		}
 		used += tokenWidth
 		start--
+	}
+	// Do not leave a combining mark detached from the clipped base character.
+	for start < len(tokens) && terminalStringWidth(tokens[start].text) == 0 {
+		start++
 	}
 	for start < len(tokens) && tokens[start].text == "/" {
 		start++
@@ -1411,13 +1416,15 @@ func writeStyledLine(w io.Writer, text string) {
 
 func trimPathForDisplay(path string, width int) string {
 	runes := []rune(path)
-	if width <= 0 || len(runes) <= width {
+	if width <= 0 || terminalRunesWidth(runes) <= width {
 		return path
 	}
 	if width <= 3 {
-		return string(runes[:width])
+		end := prefixRunesByWidth(runes, width)
+		return string(runes[:end])
 	}
-	return "..." + strings.TrimLeft(string(runes[len(runes)-width+3:]), "/")
+	start := suffixRunesByWidth(runes, width-3)
+	return "..." + strings.TrimLeft(string(runes[start:]), "/")
 }
 
 func trimRunesAroundCursor(text string, cursorPosition int, width int) (string, int) {
@@ -1431,40 +1438,102 @@ func trimRunesAroundCursor(text string, cursorPosition int, width int) (string, 
 	if cursorPosition > len(runes) {
 		cursorPosition = len(runes)
 	}
-	if len(runes) <= width {
+	if terminalRunesWidth(runes) <= width {
 		return text, cursorPosition
 	}
 	if width <= 3 {
-		start := cursorPosition - width
-		if start < 0 {
-			start = 0
-		}
-		if start > len(runes)-width {
-			start = len(runes) - width
-		}
-		return string(runes[start : start+width]), cursorPosition - start
+		start, end := runeWindowAroundCursor(runes, cursorPosition, width)
+		return string(runes[start:end]), cursorPosition - start
 	}
 
 	contentWidth := width - 3
 	// For long prompts, bias the window toward the cursor and mark hidden left
 	// context with an ellipsis.
-	start := cursorPosition - contentWidth
-	if start < 0 {
-		start = 0
-	}
+	start, end := runeWindowAroundCursor(runes, cursorPosition, contentWidth)
 	if start == 0 {
-		return string(runes[:width]), cursorPosition
+		end = prefixRunesByWidth(runes, width)
+		return string(runes[:end]), cursorPosition
 	}
-	if start > len(runes)-contentWidth {
-		start = len(runes) - contentWidth
-	}
-	visibleTail := string(runes[start : start+contentWidth])
+	visibleTail := string(runes[start:end])
 	visible := "..." + visibleTail
 	cursor := cursorPosition - start + 3
 	if cursor > len([]rune(visible)) {
 		cursor = len([]rune(visible))
 	}
 	return visible, cursor
+}
+
+func terminalStringWidth(text string) int {
+	return terminalRunesWidth([]rune(text))
+}
+
+func terminalRunesWidth(runes []rune) int {
+	total := 0
+	for _, r := range runes {
+		total += terminalRuneWidth(r)
+	}
+	return total
+}
+
+func terminalRuneWidth(r rune) int {
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
+		return 0
+	}
+	switch textwidth.LookupRune(r).Kind() {
+	case textwidth.EastAsianWide, textwidth.EastAsianFullwidth:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func prefixRunesByWidth(runes []rune, width int) int {
+	used := 0
+	end := 0
+	for end < len(runes) {
+		runeWidth := terminalRuneWidth(runes[end])
+		if used+runeWidth > width {
+			break
+		}
+		used += runeWidth
+		end++
+	}
+	return end
+}
+
+func suffixRunesByWidth(runes []rune, width int) int {
+	used := 0
+	start := len(runes)
+	for start > 0 {
+		runeWidth := terminalRuneWidth(runes[start-1])
+		if used+runeWidth > width {
+			break
+		}
+		used += runeWidth
+		start--
+	}
+	for start < len(runes) && terminalRuneWidth(runes[start]) == 0 {
+		start++
+	}
+	return start
+}
+
+func runeWindowAroundCursor(runes []rune, cursorPosition int, width int) (int, int) {
+	end := cursorPosition
+	if end < len(runes) {
+		end++
+	}
+	start := suffixRunesByWidth(runes[:end], width)
+	used := terminalRunesWidth(runes[start:end])
+	for end < len(runes) {
+		runeWidth := terminalRuneWidth(runes[end])
+		if used+runeWidth > width {
+			break
+		}
+		used += runeWidth
+		end++
+	}
+	return start, end
 }
 
 func visibleResultRange(matchCount, offset int) (int, int) {
