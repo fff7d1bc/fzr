@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScorePathMatchesCaseInsensitively(t *testing.T) {
@@ -55,6 +57,72 @@ func TestRankMatchesWithOptionsContextStopsWhenCanceled(t *testing.T) {
 	}
 	if filtered != nil {
 		t.Fatalf("matches = %#v, want nil after cancellation", filtered)
+	}
+}
+
+type cancelAfterChecksContext struct {
+	checks      int
+	cancelAfter int
+}
+
+func (c *cancelAfterChecksContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterChecksContext) Done() <-chan struct{}       { return nil }
+func (c *cancelAfterChecksContext) Value(any) any               { return nil }
+func (c *cancelAfterChecksContext) Err() error {
+	c.checks++
+	if c.checks >= c.cancelAfter {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestStableSortContextStopsAfterSortingBegins(t *testing.T) {
+	items := make([]int, sortCancellationCheckInterval*100)
+	for i := range items {
+		items[i] = len(items) - i
+	}
+	ctx := &cancelAfterChecksContext{cancelAfter: 5}
+
+	if stableSortContext(ctx, items, func(a, b int) bool { return a < b }) {
+		t.Fatal("stableSortContext completed after cancellation")
+	}
+	if ctx.checks < ctx.cancelAfter {
+		t.Fatalf("context checks = %d, want at least %d", ctx.checks, ctx.cancelAfter)
+	}
+}
+
+func TestStableSortContextPreservesStableOrder(t *testing.T) {
+	type item struct {
+		key   int
+		order int
+	}
+	items := make([]item, sortCancellationCheckInterval*20+100)
+	for i := range items {
+		items[i] = item{key: i % 7, order: i}
+	}
+
+	if !stableSortContext(context.Background(), items, func(a, b item) bool { return a.key < b.key }) {
+		t.Fatal("stableSortContext canceled unexpectedly")
+	}
+	for i := 1; i < len(items); i++ {
+		if items[i-1].key > items[i].key {
+			t.Fatalf("keys out of order at %d: %d > %d", i, items[i-1].key, items[i].key)
+		}
+		if items[i-1].key == items[i].key && items[i-1].order > items[i].order {
+			t.Fatalf("equal-key order was not stable at %d: %d > %d", i, items[i-1].order, items[i].order)
+		}
+	}
+}
+
+func TestSortNaturalPathNearTieBucketsContextStopsDuringSort(t *testing.T) {
+	matches := make([]rankedMatch, 10_000)
+	for i := range matches {
+		matches[i].Entry.Path = fmt.Sprintf("show-%05d", len(matches)-i)
+	}
+	ctx := &cancelAfterChecksContext{cancelAfter: 5}
+
+	if sortNaturalPathNearTieBucketsContext(ctx, matches) {
+		t.Fatal("sortNaturalPathNearTieBucketsContext completed after cancellation")
 	}
 }
 

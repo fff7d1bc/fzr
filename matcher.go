@@ -49,7 +49,7 @@ func rankEntriesWithOptionsContext(ctx context.Context, entries []Entry, query s
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	return sortedMatches(matches), true
+	return sortedMatchesContext(ctx, matches)
 }
 
 func plainEntryMatches(entries []Entry, fallbackSort SortMode) []Match {
@@ -68,10 +68,12 @@ func plainEntryMatchesContext(ctx context.Context, entries []Entry, fallbackSort
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	sort.SliceStable(matches, func(i, j int) bool {
-		return entryLess(matches[i].Entry, matches[j].Entry, fallbackSort)
-	})
-	return matches, ctx.Err() == nil
+	if !stableSortContext(ctx, matches, func(a, b Match) bool {
+		return entryLess(a.Entry, b.Entry, fallbackSort)
+	}) {
+		return nil, false
+	}
+	return matches, true
 }
 
 func appendRankedEntry(matches []rankedMatch, entry Entry, plan queryPlan, caseSensitive bool) []rankedMatch {
@@ -96,57 +98,79 @@ func appendRankedEntry(matches []rankedMatch, entry Entry, plan queryPlan, caseS
 }
 
 func sortedMatches(matches []rankedMatch) []Match {
-	sort.SliceStable(matches, func(i, j int) bool {
-		// Keep ordinary space-separated tokens mostly order-insensitive. Disjoint
-		// hints only matter for numeric or repeated-token queries.
-		if matches[i].fuzzyCount != matches[j].fuzzyCount {
-			return matches[i].fuzzyCount < matches[j].fuzzyCount
-		}
-		if matches[i].substringCount != matches[j].substringCount {
-			return matches[i].substringCount > matches[j].substringCount
-		}
-		if matches[i].disjointQuality != matches[j].disjointQuality {
-			return matches[i].disjointQuality > matches[j].disjointQuality
-		}
-		if matches[i].disjointCount != matches[j].disjointCount {
-			return matches[i].disjointCount > matches[j].disjointCount
-		}
-		if matches[i].disjointEnd != matches[j].disjointEnd {
-			return matches[i].disjointEnd > matches[j].disjointEnd
-		}
-		if matches[i].Score != matches[j].Score {
-			return matches[i].Score > matches[j].Score
-		}
-		if matches[i].matchSpan != matches[j].matchSpan {
-			return matches[i].matchSpan < matches[j].matchSpan
-		}
-		if matches[i].matchOffset != matches[j].matchOffset {
-			return matches[i].matchOffset < matches[j].matchOffset
-		}
-		return matches[i].Entry.Path < matches[j].Entry.Path
-	})
-	sortNaturalPathNearTieBuckets(matches)
-	out := make([]Match, len(matches))
-	for i, match := range matches {
-		out[i] = match.Match
-	}
+	out, _ := sortedMatchesContext(context.Background(), matches)
 	return out
 }
 
+func sortedMatchesContext(ctx context.Context, matches []rankedMatch) ([]Match, bool) {
+	if !stableSortContext(ctx, matches, func(a, b rankedMatch) bool {
+		// Keep ordinary space-separated tokens mostly order-insensitive. Disjoint
+		// hints only matter for numeric or repeated-token queries.
+		if a.fuzzyCount != b.fuzzyCount {
+			return a.fuzzyCount < b.fuzzyCount
+		}
+		if a.substringCount != b.substringCount {
+			return a.substringCount > b.substringCount
+		}
+		if a.disjointQuality != b.disjointQuality {
+			return a.disjointQuality > b.disjointQuality
+		}
+		if a.disjointCount != b.disjointCount {
+			return a.disjointCount > b.disjointCount
+		}
+		if a.disjointEnd != b.disjointEnd {
+			return a.disjointEnd > b.disjointEnd
+		}
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
+		if a.matchSpan != b.matchSpan {
+			return a.matchSpan < b.matchSpan
+		}
+		if a.matchOffset != b.matchOffset {
+			return a.matchOffset < b.matchOffset
+		}
+		return a.Entry.Path < b.Entry.Path
+	}) {
+		return nil, false
+	}
+	if !sortNaturalPathNearTieBucketsContext(ctx, matches) {
+		return nil, false
+	}
+	out := make([]Match, len(matches))
+	for i, match := range matches {
+		if i&255 == 0 && ctx.Err() != nil {
+			return nil, false
+		}
+		out[i] = match.Match
+	}
+	return out, ctx.Err() == nil
+}
+
 func sortNaturalPathNearTieBuckets(matches []rankedMatch) {
+	_ = sortNaturalPathNearTieBucketsContext(context.Background(), matches)
+}
+
+func sortNaturalPathNearTieBucketsContext(ctx context.Context, matches []rankedMatch) bool {
 	for start := 0; start < len(matches); {
+		if ctx.Err() != nil {
+			return false
+		}
 		end := start + 1
 		best := matches[start]
 		for end < len(matches) && naturalPathNearTieBucketMember(best, matches[end]) {
 			end++
 		}
 		if naturalPathBucketHasNumericDifference(matches[start:end]) {
-			sort.SliceStable(matches[start:end], func(i, j int) bool {
-				return naturalPathLess(matches[start+i].Entry.Path, matches[start+j].Entry.Path)
-			})
+			if !stableSortContext(ctx, matches[start:end], func(a, b rankedMatch) bool {
+				return naturalPathLess(a.Entry.Path, b.Entry.Path)
+			}) {
+				return false
+			}
 		}
 		start = end
 	}
+	return ctx.Err() == nil
 }
 
 func naturalPathNearTieBucketMember(best, match rankedMatch) bool {
@@ -277,10 +301,12 @@ func rankMatchesWithOptionsContext(ctx context.Context, matches []Match, query s
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		sort.SliceStable(out, func(i, j int) bool {
-			return entryLess(out[i].Entry, out[j].Entry, fallbackSort)
-		})
-		return out, ctx.Err() == nil
+		if !stableSortContext(ctx, out, func(a, b Match) bool {
+			return entryLess(a.Entry, b.Entry, fallbackSort)
+		}) {
+			return nil, false
+		}
+		return out, true
 	}
 
 	queryPlan := makeQueryPlan(query)
@@ -299,7 +325,38 @@ func rankMatchesWithOptionsContext(ctx context.Context, matches []Match, query s
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	return sortedMatches(ranked), true
+	return sortedMatchesContext(ctx, ranked)
+}
+
+const sortCancellationCheckInterval = 256
+
+var sortCanceledPanic = new(struct{})
+
+func stableSortContext[T any](ctx context.Context, items []T, less func(a, b T) bool) (completed bool) {
+	if ctx.Err() != nil {
+		return false
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recovered == sortCanceledPanic {
+				completed = false
+				return
+			}
+			panic(recovered)
+		}
+	}()
+	comparisons := 0
+	// The standard stable sorter has no error return. A private sentinel is the
+	// smallest way to abort it without replacing its in-place algorithm or paying
+	// for another full result slice on million-entry broad queries.
+	sort.SliceStable(items, func(i, j int) bool {
+		comparisons++
+		if comparisons%sortCancellationCheckInterval == 0 && ctx.Err() != nil {
+			panic(sortCanceledPanic)
+		}
+		return less(items[i], items[j])
+	})
+	return ctx.Err() == nil
 }
 
 type pathScore struct {
