@@ -282,8 +282,10 @@ func TestZshIntegrationPathContextRequiresTouchingWord(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "ads1"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"ads1", "eq=dir", "NAME=ads1", "space dir", "bracket[1]", "literal*", "src-one", "src-two"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	script := `zle() { :; }
@@ -291,15 +293,26 @@ bindkey() { :; }
 ` + zshIntegrationScript + `
 run_context() {
     BUFFER="$1"
-    CURSOR="$2"
+    CURSOR="${2:-${#BUFFER}}"
     LBUFFER="${BUFFER[1,CURSOR]}"
     _fzr-path-context-for-buffer
-    print -r -- "${FZR_SEARCH_IN}|${FZR_APPEND_SEARCH_SLASH}"
+    print -r -- "${FZR_SEARCH_IN}|${FZR_APPEND_SEARCH_SLASH}|${FZR_SEARCH_LITERAL}"
 }
 
 run_context 'foo --bar ads1  -- --baz' 15
 run_context 'foo --bar ads1 -- --baz' 14
 run_context 'foo --bar ads1/ -- --baz' 15
+run_context 'NAME=ads1'
+run_context 'A=x NAME=ads1'
+run_context 'NAME="bracket[1]"'
+run_context 'cmd NAME=ads1'
+run_context 'cmd eq=dir'
+run_context 'cmd space\ dir'
+run_context 'cmd "bracket[1]"'
+run_context 'cmd "bracket[1]/"'
+run_context 'cmd literal\*/'
+run_context 'cmd ads*'
+run_context 'cmd src*'
 `
 
 	cmd := exec.Command(zsh, "-f")
@@ -311,7 +324,22 @@ run_context 'foo --bar ads1/ -- --baz' 15
 	}
 
 	got := strings.Split(strings.TrimSpace(string(output)), "\n")
-	want := []string{".|", "ads1|1", "ads1/|"}
+	want := []string{
+		".||",
+		"ads1|1|",
+		"ads1/||",
+		"ads1|1|",
+		"ads1|1|",
+		`"bracket[1]"|1|1`,
+		"NAME=ads1|1|",
+		"eq=dir|1|",
+		`space\ dir|1|1`,
+		`"bracket[1]"|1|1`,
+		`"bracket[1]/"||1`,
+		`literal\*/||1`,
+		"ads*|1|",
+		".||",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("path contexts = %#v, want %#v", got, want)
 	}
