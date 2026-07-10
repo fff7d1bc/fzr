@@ -101,7 +101,7 @@ full-screen alternate buffer.
 
 Keys
 
-- Type printable characters to edit the query.
+- Type printable Unicode characters to edit the query.
 - Backspace deletes before the cursor.
 - Left and right arrows move inside the query.
 - Home and End move to the start and end of the query.

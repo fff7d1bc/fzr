@@ -1929,6 +1929,56 @@ func TestReadKeysMapsSS3Arrows(t *testing.T) {
 	}
 }
 
+func TestReadKeysDecodesUTF8QueryRunes(t *testing.T) {
+	file := writeTempInputFile(t, "żółć界")
+	defer file.Close()
+
+	var got []rune
+	for key := range readKeys(file) {
+		if key.kind != keyRune {
+			t.Fatalf("key kind = %v, want rune", key.kind)
+		}
+		got = append(got, key.r)
+	}
+	if want := "żółć界"; string(got) != want {
+		t.Fatalf("runes = %q, want %q", string(got), want)
+	}
+}
+
+func TestReadKeysDropsInvalidUTF8AndContinues(t *testing.T) {
+	file := writeTempInputFile(t, string([]byte{0xff, 0xc3, 'x'}))
+	defer file.Close()
+
+	key, ok := <-readKeys(file)
+	if !ok {
+		t.Fatal("key channel closed before valid byte")
+	}
+	if key.kind != keyRune || key.r != 'x' {
+		t.Fatalf("key = (%v, %q), want rune x", key.kind, key.r)
+	}
+}
+
+func TestReadKeysKeepsUTF8AdjacentToEscapeSequence(t *testing.T) {
+	file := writeTempInputFile(t, "界\x1b[Dé")
+	defer file.Close()
+
+	keyCh := readKeys(file)
+	want := []keyEvent{
+		{kind: keyRune, r: '界'},
+		{kind: keyLeft},
+		{kind: keyRune, r: 'é'},
+	}
+	for i, expected := range want {
+		key, ok := <-keyCh
+		if !ok {
+			t.Fatalf("key channel closed before event %d", i)
+		}
+		if key != expected {
+			t.Fatalf("key %d = %#v, want %#v", i, key, expected)
+		}
+	}
+}
+
 func TestReadKeysDrainsUnsupportedCSISequences(t *testing.T) {
 	file := writeTempInputFile(t, "\x1b[3~x")
 	defer file.Close()

@@ -1005,6 +1005,23 @@ func readKeys(stdin *os.File) <-chan keyEvent {
 			default:
 				if b >= 32 && b < 127 {
 					out <- keyEvent{kind: keyRune, r: rune(b)}
+					continue
+				}
+				if b >= utf8.RuneSelf {
+					// Control keys and escape sequences are byte-oriented, but query
+					// text must be decoded as UTF-8 so one keypress becomes one edit.
+					if err := reader.UnreadByte(); err != nil {
+						return
+					}
+					r, size, err := reader.ReadRune()
+					if err != nil {
+						return
+					}
+					if r != utf8.RuneError || size > 1 {
+						if unicode.IsPrint(r) {
+							out <- keyEvent{kind: keyRune, r: r}
+						}
+					}
 				}
 			}
 		}
