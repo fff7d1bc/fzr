@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 )
 
 type config struct {
@@ -40,12 +43,36 @@ func (f *stringListFlag) Set(value string) error {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		var signalErr *terminationSignalError
+		if errors.As(err, &signalErr) {
+			reraiseSignal(signalErr.signal)
+		}
 		if errors.Is(err, errPickerCanceled) {
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func reraiseSignal(received os.Signal) {
+	sig, ok := received.(syscall.Signal)
+	if !ok {
+		os.Exit(1)
+	}
+	// Signal delivery was intercepted only long enough to restore the terminal.
+	// Reset before signaling ourselves so the shell observes normal signal exit
+	// semantics instead of a generic fzr error.
+	signal.Reset(sig)
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	// Go's signal machinery may deliver the reset signal after Kill returns. Give
+	// it time to terminate the process, then keep the conventional numeric status
+	// as a fallback if the platform delays or suppresses self-delivery.
+	time.Sleep(time.Second)
+	os.Exit(128 + int(sig))
 }
 
 func run(args []string, stdout, stderr io.Writer) error {

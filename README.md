@@ -29,6 +29,8 @@ selected/path.txt
 ```
 
 Esc cancels the picker. Cancel exits with status `1` and prints no path.
+External SIGINT, SIGTERM, and SIGHUP restore the terminal before `fzr`
+terminates from the same signal, preserving the shell's signal-derived status.
 
 Non-interactive listing is available too.
 

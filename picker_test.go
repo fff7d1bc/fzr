@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1180,6 +1182,31 @@ func TestPickEntryCancelReturnsCanceled(t *testing.T) {
 	_, err := pickEntry(context.Background(), model, scanCh, keyCh, &stderr, 80, pickerThemeForColor(false))
 	if err != errPickerCanceled {
 		t.Fatalf("err = %v, want %v", err, errPickerCanceled)
+	}
+}
+
+func TestPickEntryReturnsTerminationSignal(t *testing.T) {
+	model := newPickerModel(SortPath)
+	terminationCh := make(chan os.Signal, 1)
+	terminationCh <- syscall.SIGTERM
+
+	_, err := pickEntryWithRendererAndRankerAndSignals(
+		context.Background(),
+		model,
+		nil,
+		nil,
+		terminationCh,
+		pickerRenderer{},
+		time.Hour,
+		nil,
+		defaultQueryRanker,
+	)
+	var signalErr *terminationSignalError
+	if !errors.As(err, &signalErr) {
+		t.Fatalf("err = %v, want terminationSignalError", err)
+	}
+	if signalErr.signal != syscall.SIGTERM {
+		t.Fatalf("signal = %v, want SIGTERM", signalErr.signal)
 	}
 }
 

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -35,6 +37,14 @@ const (
 )
 
 var errPickerCanceled = errors.New("selection canceled")
+
+type terminationSignalError struct {
+	signal os.Signal
+}
+
+func (e *terminationSignalError) Error() string {
+	return fmt.Sprintf("terminated by %s", e.signal)
+}
 
 type pickerModel struct {
 	query                 []rune
@@ -440,6 +450,9 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	if !term.IsTerminal(inFD) {
 		return fmt.Errorf("interactive mode requires a terminal on stdin")
 	}
+	terminationCh := make(chan os.Signal, 1)
+	signal.Notify(terminationCh, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(terminationCh)
 	oldState, err := term.MakeRaw(inFD)
 	if err != nil {
 		return err
@@ -463,7 +476,7 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 	defer term.Restore(inFD, oldState)
 	defer fmt.Fprint(stderr, "\x1b[?25h\x1b[0m")
 
-	selected, err := pickEntry(ctx, model, scanCh, keyCh, stderr, width, theme)
+	selected, err := pickEntryWithSignals(ctx, model, scanCh, keyCh, terminationCh, stderr, width, theme)
 	clearPicker(stderr)
 	if err != nil {
 		return err
@@ -478,6 +491,10 @@ func runInteractive(ctx context.Context, opts ScanOptions, sortMode SortMode, ca
 }
 
 func pickEntry(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, stderr io.Writer, width int, theme pickerTheme) (Entry, error) {
+	return pickEntryWithSignals(ctx, model, scanCh, keyCh, nil, stderr, width, theme)
+}
+
+func pickEntryWithSignals(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, terminationCh <-chan os.Signal, stderr io.Writer, width int, theme pickerTheme) (Entry, error) {
 	renderer := pickerRenderer{
 		full: func() {
 			renderPicker(stderr, model, width, theme)
@@ -486,7 +503,7 @@ func pickEntry(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult
 			renderPickerPrompt(stderr, model, width, theme)
 		},
 	}
-	return pickEntryWithRenderer(ctx, model, scanCh, keyCh, renderer, scanRenderInterval, nil)
+	return pickEntryWithRendererAndRankerAndSignals(ctx, model, scanCh, keyCh, terminationCh, renderer, scanRenderInterval, nil, defaultQueryRanker)
 }
 
 type pickerRenderer struct {
@@ -549,6 +566,10 @@ func pickEntryWithRenderer(ctx context.Context, model *pickerModel, scanCh <-cha
 }
 
 func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, renderer pickerRenderer, scanInterval time.Duration, queryDebounce func(*pickerModel) time.Duration, ranker queryRanker) (Entry, error) {
+	return pickEntryWithRendererAndRankerAndSignals(ctx, model, scanCh, keyCh, nil, renderer, scanInterval, queryDebounce, ranker)
+}
+
+func pickEntryWithRendererAndRankerAndSignals(ctx context.Context, model *pickerModel, scanCh <-chan ScanResult, keyCh <-chan keyEvent, terminationCh <-chan os.Signal, renderer pickerRenderer, scanInterval time.Duration, queryDebounce func(*pickerModel) time.Duration, ranker queryRanker) (Entry, error) {
 	scanInterval = effectiveScanRenderInterval(scanInterval)
 	var pending []Entry
 	var tick <-chan time.Time
@@ -889,6 +910,12 @@ func pickEntryWithRendererAndRanker(ctx context.Context, model *pickerModel, sca
 			}
 		case <-ctx.Done():
 			return Entry{}, ctx.Err()
+		case received, ok := <-terminationCh:
+			if !ok {
+				terminationCh = nil
+				continue
+			}
+			return Entry{}, &terminationSignalError{signal: received}
 		}
 	}
 }
