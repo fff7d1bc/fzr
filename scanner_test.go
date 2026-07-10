@@ -189,6 +189,48 @@ func TestScanEntriesDoesNotFollowSymlinksByDefault(t *testing.T) {
 	}
 }
 
+func TestWalkDirShallowFirstDoesNotFollowReplacedDirectory(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+	if err := os.Mkdir(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	writeFile(t, filepath.Join(target, "secret.txt"))
+	probe := filepath.Join(root, "symlink-probe")
+	if err := os.Symlink(target, probe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+
+	var paths []string
+	err := walkDirShallowFirst(context.Background(), root, nil, func(path string, dirent fs.DirEntry, entryType EntryType) error {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, filepath.ToSlash(rel))
+		if path != victim {
+			return nil
+		}
+		if err := os.Remove(victim); err != nil {
+			return err
+		}
+		if err := os.Symlink(target, victim); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsPath(paths, "victim/secret.txt") {
+		t.Fatalf("paths = %#v, followed directory replaced by symlink", paths)
+	}
+}
+
 func TestScanEntriesFollowsSymlinkedDirectoriesWhenRequested(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "real", "a.txt"))
@@ -419,6 +461,15 @@ func entryPaths(entries []Entry) []string {
 		paths[i] = entry.Path
 	}
 	return paths
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertPathBefore(t *testing.T, paths []string, before, after string) {

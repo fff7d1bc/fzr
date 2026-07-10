@@ -306,6 +306,8 @@ wherever it appears below the root.
 ## Symlinks
 
 By default, symlinks are listed but not followed.
+If a directory is replaced by a symlink while a default scan is in progress,
+that raced directory is skipped rather than followed.
 
 Use `--follow-symlinks` to follow symlinked files and directories:
 

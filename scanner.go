@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const scanBatchSize = 512
@@ -167,31 +170,47 @@ func ignoredDir(ignored map[string]struct{}, name string) bool {
 }
 
 func walkDirShallowFirst(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
-	var walk func(string) error
-	walk = func(dir string) error {
+	rootDir, err := openDirNoFollow(root)
+	if err != nil {
+		if skippableNoFollowOpenError(err) {
+			return nil
+		}
+		return err
+	}
+	var walk func(*os.File, string) error
+	walk = func(dir *os.File, dirPath string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		entries, err := os.ReadDir(dir)
+		entries, err := dir.ReadDir(-1)
 		if err != nil {
 			if skippableScanError(err) {
 				return nil
 			}
 			return err
 		}
-		childDirs := make([]string, 0, len(entries))
+		// File.ReadDir preserves filesystem order, while the previous os.ReadDir
+		// traversal sorted names. Keep discovery order stable for the empty picker.
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Name() < entries[j].Name()
+		})
+		type childDir struct {
+			name string
+			path string
+		}
+		childDirs := make([]childDir, 0, len(entries))
 		for _, dirent := range entries {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			path := filepath.Join(dir, dirent.Name())
+			path := filepath.Join(dirPath, dirent.Name())
 			entryType := TypeFile
 			if dirent.IsDir() {
 				if ignoredDir(ignored, dirent.Name()) {
 					continue
 				}
 				entryType = TypeDir
-				childDirs = append(childDirs, path)
+				childDirs = append(childDirs, childDir{name: dirent.Name(), path: path})
 			}
 			if err := addEntry(path, dirent, entryType); err != nil {
 				return err
@@ -200,14 +219,64 @@ func walkDirShallowFirst(ctx context.Context, root string, ignored map[string]st
 		// Emit a directory's immediate entries before descending. This keeps
 		// nearby paths available to the interactive picker while a large earlier
 		// sibling is still being scanned.
-		for _, childDir := range childDirs {
-			if err := walk(childDir); err != nil {
+		for _, child := range childDirs {
+			childFile, err := openDirAtNoFollow(dir, child.name, child.path)
+			if err != nil {
+				// A directory may disappear or be replaced after ReadDir. O_NOFOLLOW
+				// makes that race a skipped snapshot entry instead of silently walking
+				// through a new symlink target.
+				if skippableNoFollowOpenError(err) {
+					continue
+				}
 				return err
+			}
+			walkErr := walk(childFile, child.path)
+			closeErr := childFile.Close()
+			if walkErr != nil {
+				return walkErr
+			}
+			if closeErr != nil {
+				return closeErr
 			}
 		}
 		return nil
 	}
-	return walk(root)
+	walkErr := walk(rootDir, root)
+	closeErr := rootDir.Close()
+	if walkErr != nil {
+		return walkErr
+	}
+	return closeErr
+}
+
+func openDirNoFollow(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open directory %q: invalid file descriptor", path)
+	}
+	return file, nil
+}
+
+func openDirAtNoFollow(parent *os.File, name, path string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open directory %q: invalid file descriptor", path)
+	}
+	return file, nil
+}
+
+func skippableNoFollowOpenError(err error) bool {
+	return skippableScanError(err) || errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
 }
 
 func walkDirFollowLinks(ctx context.Context, root string, ignored map[string]struct{}, addEntry func(string, fs.DirEntry, EntryType) error) error {
